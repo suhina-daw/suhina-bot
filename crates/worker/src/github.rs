@@ -113,6 +113,7 @@ impl GitHub {
                         Some(suhina_bot_core::review::Similar {
                             number: item.get("number")?.as_u64()?,
                             title: shorten(item.get("title")?.as_str()?, 80),
+                            url: item.get("html_url")?.as_str()?.to_owned(),
                         })
                     })
                     .collect()

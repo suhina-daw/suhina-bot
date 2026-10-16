@@ -8,6 +8,7 @@
 use serde_json::Value;
 use suhina_bot_core::forum;
 use suhina_bot_core::interaction::Interaction;
+use suhina_bot_core::reply;
 use suhina_bot_core::review::{self, Action, Draft, Edit, Post, Source};
 use worker::{Env, Result, console_error};
 
@@ -51,8 +52,10 @@ pub async fn thread(
     };
     let store = Store::new(env)?;
     if let Some(number) = store.get::<u64>(&format!("tracked:{channel_id}")).await? {
+        let repository = env.var("GITHUB_REPOSITORY")?.to_string();
         return Ok(review::closed_card(&format!(
-            "Already tracked as #{number}."
+            "Already tracked as {}.",
+            reply::issue_link_in(&repository, number)
         )));
     }
     let forum_channel = discord.channel(parent).await?;
@@ -267,7 +270,7 @@ async fn create(
     }
     store.delete(&draft_key(key)).await?;
 
-    let mut text = format!("Created #{number}: <{url}>");
+    let mut text = format!("Created {}.", reply::issue_link(number, &url));
     if not_copied > 0 {
         text.push_str(&format!(
             "\n{not_copied} screenshot(s) could not be copied; the issue says so."

@@ -92,6 +92,8 @@ pub struct Post<'a> {
 pub struct Similar {
     pub number: u64,
     pub title: String,
+    #[serde(default)]
+    pub url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -493,7 +495,7 @@ pub fn card(draft: &Draft, key: &str, words: Option<&[String]>, copying: bool) -
         let similar: Vec<String> = draft
             .similar
             .iter()
-            .map(|s| format!("#{} {}", s.number, s.title))
+            .map(|s| format!("{} {}", crate::reply::issue_link(s.number, &s.url), s.title))
             .collect();
         lines.push(format!(
             "**Similar open issues:** {}",
@@ -648,10 +650,12 @@ pub fn issue_type(kind: Kind) -> &'static str {
 pub fn thanks(kind: Kind, number: u64, url: &str) -> String {
     match kind {
         Kind::Bug => format!(
-            "Thanks for the bug report! It's tracked on GitHub as #{number}: <{url}>. We'll post here when it's fixed."
+            "Thanks for the bug report! It's tracked on GitHub as {}. We'll post here when it's fixed.",
+            crate::reply::issue_link(number, url)
         ),
         Kind::Feature => format!(
-            "Thanks for the idea! It's on the backlog on GitHub as #{number}: <{url}>. We'll post here when it lands."
+            "Thanks for the idea! It's on the backlog on GitHub as {}. We'll post here when it lands.",
+            crate::reply::issue_link(number, url)
         ),
     }
 }
@@ -736,6 +740,7 @@ mod tests {
         assert_eq!(draft.labels, ["enhancement", "from-discord", "ui"]);
         assert!(issue_body(&draft, &[], 0, 0).starts_with("Feature request from Discord."));
         assert!(thanks(Kind::Feature, 3, "u").starts_with("Thanks for the idea!"));
+        assert!(thanks(Kind::Bug, 3, "https://x/3").contains("as [#3](<https://x/3>)."));
         assert!(thanks(Kind::Bug, 3, "u").starts_with("Thanks for the bug report!"));
     }
 

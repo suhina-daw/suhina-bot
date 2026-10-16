@@ -23,6 +23,20 @@ fn no_mentions() -> Value {
     json!({ "parse": [] })
 }
 
+/// An issue or pull request as Discord shows it: `[#612](<url>)`, a masked link whose preview
+/// is suppressed. The bot never names one by a bare number or a bare URL.
+pub fn issue_link(number: u64, url: &str) -> String {
+    format!("[#{number}](<{url}>)")
+}
+
+/// The link of issue `number` in `repository` (`owner/name`).
+pub fn issue_link_in(repository: &str, number: u64) -> String {
+    issue_link(
+        number,
+        &format!("https://github.com/{repository}/issues/{number}"),
+    )
+}
+
 /// `text` cut to at most `limit` characters, ending with `…` when it was cut.
 pub fn shorten(text: &str, limit: usize) -> String {
     if text.chars().count() <= limit {
@@ -145,6 +159,18 @@ mod tests {
         assert_eq!(
             edit_original_embeds(vec![])["allowed_mentions"],
             json!({ "parse": [] })
+        );
+    }
+
+    #[test]
+    fn issues_are_masked_links() {
+        assert_eq!(
+            issue_link(612, "https://github.com/o/r/issues/612"),
+            "[#612](<https://github.com/o/r/issues/612>)"
+        );
+        assert_eq!(
+            issue_link_in("o/r", 7),
+            "[#7](<https://github.com/o/r/issues/7>)"
         );
     }
 
