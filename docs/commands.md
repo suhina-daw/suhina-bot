@@ -15,3 +15,7 @@ Registered with Discord by `suhina-bot-register` (docs/operations.md › Registe
 | Command | How to use it | Who | What it does |
 |---|---|---|---|
 | `/help` | `/help` | Everyone | What Suhina bot does, its commands, and the latest nightly build |
+| `/bug` | `/bug` | Everyone | Report a bug in Suhina: a form that posts it in #bug-reports |
+| `/track` | `/track` | Moderators and contributors | Turn this bug-reports or feature-requests post into a GitHub issue, after a review |
+| Add as bug | Right-click a message › Apps › Add as bug | Moderators and contributors | Turn a message into a GitHub bug issue, after a review |
+| Add to backlog | Right-click a message › Apps › Add to backlog | Moderators and contributors | Turn a message into a GitHub feature request, after a review |

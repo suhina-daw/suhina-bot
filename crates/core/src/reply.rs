@@ -56,6 +56,12 @@ pub fn deferred(ephemeral: bool) -> Value {
     json!({ "type": DEFERRED_CHANNEL_MESSAGE, "data": { "flags": flags } })
 }
 
+/// Acknowledges a button or a form on a message without a new message; the message is then
+/// edited (`edit_original`).
+pub fn deferred_update() -> Value {
+    json!({ "type": 6 })
+}
+
 /// The body that replaces a deferred answer (`PATCH /webhooks/{app}/{token}/messages/@original`).
 pub fn edit_original(content: &str) -> Value {
     json!({

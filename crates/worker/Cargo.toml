@@ -19,7 +19,7 @@ worker = "0.8.7"
 # The Durable Object macro expands to code that names wasm-bindgen directly; same version as worker.
 wasm-bindgen = "=0.2.129"
 # WebCrypto signs the GitHub App JWT (RS256) natively, so no RSA code runs in WebAssembly.
-web-sys = { version = "0.3", features = ["Crypto", "CryptoKey", "SubtleCrypto", "WorkerGlobalScope"] }
+web-sys = { version = "0.3", features = ["Blob", "Crypto", "CryptoKey", "FormData", "SubtleCrypto", "WorkerGlobalScope"] }
 
 [lints]
 workspace = true

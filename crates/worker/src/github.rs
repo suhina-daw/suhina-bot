@@ -58,6 +58,117 @@ impl GitHub {
         Ok(suhina_bot_core::nightly::Nightly::from_release(&release))
     }
 
+    /// Opens an issue; returns its number, link and node id. When GitHub refuses the issue type
+    /// (an organization without it), the issue is opened without one.
+    pub async fn create_issue(
+        &self,
+        title: &str,
+        body: &str,
+        labels: &[String],
+        issue_type: &str,
+    ) -> Result<(u64, String, String)> {
+        let path = format!("/repos/{}/issues", self.repository);
+        let mut payload =
+            json!({ "title": title, "body": body, "labels": labels, "type": issue_type });
+        let issue = match self.rest(Method::Post, &path, Some(&payload)).await {
+            Ok(issue) => issue,
+            Err(_) => {
+                if let Some(object) = payload.as_object_mut() {
+                    object.remove("type");
+                }
+                self.rest(Method::Post, &path, Some(&payload)).await?
+            }
+        };
+        let number = issue.get("number").and_then(Value::as_u64);
+        let url = issue.get("html_url").and_then(Value::as_str);
+        let node = issue.get("node_id").and_then(Value::as_str);
+        match (number, url, node) {
+            (Some(number), Some(url), Some(node)) => Ok((number, url.to_owned(), node.to_owned())),
+            _ => Err(Error::RustError(
+                "issue answer without number, link or id".into(),
+            )),
+        }
+    }
+
+    /// Up to five open issues whose titles share words with `title`.
+    pub async fn similar(&self, title: &str) -> Result<Vec<suhina_bot_core::review::Similar>> {
+        let Some(query) = suhina_bot_core::review::similar_query(&self.repository, title) else {
+            return Ok(Vec::new());
+        };
+        let encoded: String = worker::js_sys::encode_uri_component(&query).into();
+        let found = self
+            .rest(
+                Method::Get,
+                &format!("/search/issues?per_page=5&q={encoded}"),
+                None,
+            )
+            .await?;
+        Ok(found
+            .get("items")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| {
+                        Some(suhina_bot_core::review::Similar {
+                            number: item.get("number")?.as_u64()?,
+                            title: shorten(item.get("title")?.as_str()?, 80),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// The project board's fields and options.
+    pub async fn board(&self, owner: &str, number: u64) -> Result<core::Board> {
+        let data = self
+            .graphql(
+                core::BOARD_QUERY,
+                &json!({ "owner": owner, "number": number }),
+            )
+            .await?;
+        core::Board::parse(&data)
+            .ok_or_else(|| Error::RustError("board answer without a project".into()))
+    }
+
+    /// Puts an issue on the board in `Backlog`, with Priority and Phase when given.
+    pub async fn add_to_board(
+        &self,
+        board: &core::Board,
+        issue_node: &str,
+        priority: Option<&str>,
+        phase: Option<&str>,
+    ) -> Result<()> {
+        let added = self
+            .graphql(
+                "mutation($project:ID!,$content:ID!){addProjectV2ItemById(input:{projectId:$project,contentId:$content}){item{id}}}",
+                &json!({ "project": board.id, "content": issue_node }),
+            )
+            .await?;
+        let item = added
+            .pointer("/addProjectV2ItemById/item/id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::RustError("board answer without an item".into()))?
+            .to_owned();
+        let wanted = [
+            ("Status", Some("Backlog")),
+            ("Priority", priority),
+            ("Phase", phase),
+        ];
+        for (field, option) in wanted {
+            let Some((field_id, option_id)) = option.and_then(|o| board.option(field, o)) else {
+                continue;
+            };
+            self.graphql(
+                "mutation($project:ID!,$item:ID!,$field:ID!,$option:String!){updateProjectV2ItemFieldValue(input:{projectId:$project,itemId:$item,fieldId:$field,value:{singleSelectOptionId:$option}}){projectV2Item{id}}}",
+                &json!({ "project": board.id, "item": item, "field": field_id, "option": option_id }),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     /// A REST call as the installation. Answers other than 2xx are errors with GitHub's message.
     pub async fn rest(&self, method: Method, path: &str, body: Option<&Value>) -> Result<Value> {
         let token = self.installation_token().await?;
@@ -72,7 +183,6 @@ impl GitHub {
     }
 
     /// A GraphQL query as the installation; GraphQL errors are errors too.
-    #[allow(dead_code)] // used by the board commands (#5, #7)
     pub async fn graphql(&self, query: &str, variables: &Value) -> Result<Value> {
         let answer = self
             .rest(

@@ -1,10 +1,10 @@
 ---
 description: Running the Suhina bot - Cloudflare and GitHub resources, deploying, secrets and rotating them, registering commands, logs and troubleshooting
-read_when: repository protection, ruleset, branch protection, dependabot, secret scanning, deploy, wrangler, secret, rotate key, bot token, private key, register commands, logs, wrangler tail, interactions endpoint, KV id, Durable Object, troubleshooting, GitHub could not be reached
+read_when: repository protection, ruleset, branch protection, dependabot, secret scanning, deploy, wrangler, secret, rotate key, bot token, private key, register commands, logs, wrangler tail, interactions endpoint, KV id, Durable Object, troubleshooting, GitHub could not be reached, role IDs, staff roles, bug-reports forum, Message Content intent, command permissions, REVIEW_WORDS, R2 bucket, screenshots
 type: howto
 status: current
 last_verified: 2026-10-16
-covers: crates/worker/wrangler.toml, SECURITY.md, .github/CODEOWNERS, .github/dependabot.yml, crates/register, .github/workflows/ci.yml
+covers: crates/worker/wrangler.toml, SECURITY.md, .github/CODEOWNERS, .github/dependabot.yml, crates/worker/src/settings.rs, crates/register, .github/workflows/ci.yml
 ---
 
 # Operations
@@ -36,6 +36,52 @@ run out; waiting for GitHub or Discord costs no CPU. Check Workers & Pages › s
 CPU Time; if the highest values approach 10 ms, move to Workers Paid or apply to Cloudflare's
 open source programme, Project Alexandria.
 
+## Settings
+
+In `crates/worker/wrangler.toml` `[vars]` (not secret):
+
+| Setting | What | Where to find it |
+|---|---|---|
+| `BUG_REPORTS_FORUM_ID` | the forum channel `bug-reports`: `/bug` posts there, `/track` there makes a bug | Discord with Developer Mode on (User Settings › Advanced): right-click the channel › Copy Channel ID |
+| `FEATURE_REQUESTS_FORUM_ID` | the forum channel `feature-requests`: `/track` there makes a feature request | as above |
+| `STAFF_ROLE_IDS` | roles that may use `/track` and the message commands: `Mod`, `github-mod`, `github-contributor`, comma-separated | Server Settings › Roles › right-click a role › Copy Role ID |
+| `TRIAGE_ROLE_IDS` | roles that also set Priority and Phase: `github-mod` | as above |
+| `SCREENSHOTS_URL` | public base URL of the screenshots bucket; empty keeps screenshots in Discord | R2 › bucket › Settings › Public access |
+| `BOARD_OWNER`, `BOARD_NUMBER` | the project board new issues go on | the board's URL |
+
+A server administrator counts as staff and triage without a role. An empty setting turns its
+feature off, and the bot says which setting is missing.
+
+### Discord setup for `/bug` and `/track`
+
+1. Developer Portal › Bot › **Message Content Intent** on. The bot reads a post's starter message
+   only when `/track` is used in it, never otherwise.
+2. In `bug-reports` and `feature-requests`, give the bot (Discord's names in a forum): View
+   Channel, Create Posts, Send Messages in Posts, Attach Files, Read Post History, Add Reactions,
+   Manage Posts (tags).
+3. `bug-reports` has the tags Mac, Windows, Linux (for `/bug`); both forums have **Tracked** (set
+   by `/track`; staff only, so reporters cannot set it). Names are matched ignoring case. Tags
+   that become labels are listed in `crates/core/src/review.rs` (`TAG_LABELS`).
+4. Server Settings › Integrations › Suhina: allow `/track`, **Add as bug** and **Add to backlog**
+   for the staff roles. They are hidden from everyone else by default; the Worker checks the
+   roles anyway.
+
+### Screenshots (R2)
+
+Off until set up, because R2 needs a payment method on the Cloudflare account even within the
+free allowance (10 GB, no egress fees). To turn it on:
+
+```sh
+cd crates/worker
+npx wrangler r2 bucket create suhina-bot-screenshots
+```
+
+then in the dashboard › R2 › suhina-bot-screenshots › Settings › Public access, allow the
+`r2.dev` URL (or a custom domain), uncomment `[[r2_buckets]]` in `wrangler.toml`, set
+`SCREENSHOTS_URL` and deploy. Only screenshots a moderator selected are stored, under random
+names (`screenshots/<uuid>.png`). To remove one on request: R2 › the bucket › the object ›
+Delete, and edit the issue.
+
 ## Deploying
 
 ```sh
@@ -66,7 +112,8 @@ Get-Content path\to\key.pem -Raw | npx wrangler secret put GITHUB_APP_PRIVATE_KE
 |---|---|---|
 | `GITHUB_APP_PRIVATE_KEY` | the App's private key, the whole `.pem` | 1Password |
 | `GITHUB_WEBHOOK_SECRET` | the App's webhook secret; not set until the webhook is turned on (#9) | 1Password |
-| `DISCORD_BOT_TOKEN` | reactions and forum tags (#7); not set yet | 1Password |
+| `DISCORD_BOT_TOKEN` | reading a post, making posts, tags and reactions (`/bug`, `/track`) | 1Password |
+| `REVIEW_WORDS` | a JSON array of product names the review card marks, e.g. `'["…", "…"]'`; a secret so the names stay out of this public repository. Include old and new names of a renamed product. Missing: the card says the check is off | 1Password |
 
 `npx wrangler secret list` shows the names. A value is never written to a file in the repository,
 a log or a command line that is kept in history.
@@ -134,3 +181,7 @@ Workers › suhina-bot › Logs keeps them too. Log lines hold no secrets and no
 | `/help` says GitHub could not be reached | the private key secret is missing or wrong, or the App is not installed on the repository: `wrangler tail` shows GitHub's answer |
 | "Something went wrong on Suhina's side" | a job failed; the log line names it |
 | A new command does not show | not registered yet, or registered globally and still spreading |
+| `/track` says "Use /track inside a post" in a post | `BUG_REPORTS_FORUM_ID` or `FEATURE_REQUESTS_FORUM_ID` is not that forum's ID |
+| "Only moderators and contributors…" for a moderator | their role is not in `STAFF_ROLE_IDS` |
+| The card shows an empty text | Message Content Intent is off |
+| "the Tracked tag could not be set" | the forum has no Tracked tag, or the bot lacks Manage Threads there |

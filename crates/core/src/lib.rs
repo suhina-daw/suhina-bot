@@ -6,12 +6,17 @@
 //! deciding the answer, and the pieces of a GitHub App token. `suhina-bot-worker` is the thin
 //! layer that runs it on Cloudflare Workers.
 
+pub mod access;
+pub mod bug;
 pub mod commands;
 pub mod error;
+pub mod forum;
 pub mod github;
 pub mod interaction;
 pub mod nightly;
 pub mod reply;
+pub mod review;
+pub mod screenshot;
 pub mod verify;
 pub mod webhook;
 

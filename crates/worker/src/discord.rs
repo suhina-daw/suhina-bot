@@ -4,23 +4,23 @@
 //! Discord interactions: check the signature, decide the answer in core, and for a deferred
 //! answer run the job after answering and edit the answer with its result.
 
+use serde_json::Value;
+use suhina_bot_core::access::Access;
 use suhina_bot_core::commands::{self, Action, Job};
 use suhina_bot_core::interaction::Interaction;
 use suhina_bot_core::reply;
 use suhina_bot_core::verify::DiscordKey;
-use worker::wasm_bindgen::JsValue;
-use worker::{
-    Context, Env, Fetch, Headers, Method, Request, RequestInit, Response, Result, console_error,
-};
+use worker::{Context, Env, Response, Result, console_error};
 
+use crate::discord_api::edit_original;
 use crate::github::GitHub;
-
-const DISCORD_API: &str = "https://discord.com/api/v10";
+use crate::settings::Settings;
+use crate::{bug, track};
 
 /// The answer when a job fails; the details go to the log only.
 const FAILED: &str = "Something went wrong on Suhina's side. Try again in a moment.";
 
-pub async fn handle(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
+pub async fn handle(mut req: worker::Request, env: Env, ctx: Context) -> Result<Response> {
     let signature = req
         .headers()
         .get("X-Signature-Ed25519")?
@@ -45,31 +45,60 @@ pub async fn handle(mut req: Request, env: Env, ctx: Context) -> Result<Response
         }
     };
 
-    match commands::route(&interaction) {
+    let access = Access::of(&interaction, &Settings::read(&env).roles);
+    match commands::route(&interaction, access) {
         Action::Reply(answer) => Response::from_json(&answer),
         Action::Defer { ephemeral, job } => {
             ctx.wait_until(run_job(env, interaction, job));
             Response::from_json(&reply::deferred(ephemeral))
         }
+        Action::DeferUpdate { job } => {
+            ctx.wait_until(run_job(env, interaction, job));
+            Response::from_json(&reply::deferred_update())
+        }
+        // A form must be the first answer, so the draft is read before answering.
+        Action::OpenEdit { key } => match track::edit_form(&env, &key).await {
+            Ok(Some(form)) => Response::from_json(&form),
+            Ok(None) => Response::from_json(&reply::ephemeral(
+                "This draft has expired (15 minutes). Run the command again.",
+            )),
+            Err(error) => {
+                console_error!("edit form: {error}");
+                Response::from_json(&reply::ephemeral(FAILED))
+            }
+        },
     }
 }
 
-/// Runs a deferred job and puts its result in place of "thinking…". A failure is logged and
-/// shown to the user as a short apology.
+/// Runs a deferred job and puts its result in place of "thinking…" (or of the card). A failure
+/// is logged and shown to the user as a short apology.
 async fn run_job(env: Env, interaction: Interaction, job: Job) {
-    let body = match job_answer(&env, &job).await {
+    let body = match job_answer(&env, &interaction, &job).await {
         Ok(body) => body,
         Err(error) => {
-            console_error!("job {job:?}: {error}");
+            console_error!("job {}: {error}", job_name(&job));
             reply::edit_original(FAILED)
         }
     };
-    if let Err(error) = edit_original(&interaction, &body).await {
-        console_error!("editing the answer of {job:?}: {error}");
+    if let Err(error) = edit_original(&interaction.application_id, &interaction.token, &body).await
+    {
+        console_error!("editing the answer of {}: {error}", job_name(&job));
     }
 }
 
-async fn job_answer(env: &Env, job: &Job) -> Result<serde_json::Value> {
+/// For logs: the job without its data, which can hold a user's text.
+fn job_name(job: &Job) -> &'static str {
+    match job {
+        Job::Help => "help",
+        Job::Bug(_) => "bug",
+        Job::TrackThread { .. } => "track",
+        Job::TrackMessage(_) => "track message",
+        Job::Card { .. } => "card",
+        Job::CardEdit { .. } => "card edit",
+    }
+}
+
+async fn job_answer(env: &Env, interaction: &Interaction, job: &Job) -> Result<Value> {
     match job {
         Job::Help => {
             let github = GitHub::new(env)?;
@@ -88,32 +117,18 @@ async fn job_answer(env: &Env, job: &Job) -> Result<serde_json::Value> {
                 open,
             )))
         }
+        Job::Bug(report) => Ok(reply::edit_original(
+            &bug::submit(env, interaction, report).await?,
+        )),
+        Job::TrackThread { channel_id, triage } => {
+            track::thread(env, interaction, channel_id, *triage).await
+        }
+        Job::TrackMessage(draft) => track::message(env, (**draft).clone()).await,
+        Job::Card {
+            action,
+            key,
+            values,
+        } => track::card_action(env, key, *action, values).await,
+        Job::CardEdit { key, edit } => track::card_edit(env, key, edit).await,
     }
-}
-
-/// `PATCH /webhooks/{application}/{token}/messages/@original`: needs no bot token, the
-/// interaction's token is the credential, valid for 15 minutes.
-async fn edit_original(interaction: &Interaction, body: &serde_json::Value) -> Result<()> {
-    let url = format!(
-        "{DISCORD_API}/webhooks/{}/{}/messages/@original",
-        interaction.application_id, interaction.token
-    );
-    let headers = Headers::new();
-    headers.set("Content-Type", "application/json")?;
-    let mut init = RequestInit::new();
-    init.with_method(Method::Patch)
-        .with_headers(headers)
-        .with_body(Some(JsValue::from_str(&body.to_string())));
-    let mut response = Fetch::Request(Request::new_with_init(&url, &init)?)
-        .send()
-        .await?;
-    if response.status_code() >= 300 {
-        let status = response.status_code();
-        let text = response.text().await.unwrap_or_default();
-        return Err(worker::Error::RustError(format!(
-            "Discord answered {status}: {}",
-            reply::shorten(&text, 300)
-        )));
-    }
-    Ok(())
 }

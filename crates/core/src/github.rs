@@ -143,6 +143,80 @@ pub fn parse_installation(body: &[u8]) -> Result<Installation, Error> {
     serde_json::from_slice(body).map_err(|_| Error::GitHub("installation answer".into()))
 }
 
+/// The project board: its id and its single-select fields (Status, Priority, Phase) with their
+/// options, from `organization { projectV2 { fields } }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Board {
+    pub id: String,
+    pub fields: Vec<BoardField>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoardField {
+    pub id: String,
+    pub name: String,
+    /// `(name, id)`
+    pub options: Vec<(String, String)>,
+}
+
+pub const BOARD_QUERY: &str = "query($owner:String!,$number:Int!){organization(login:$owner){projectV2(number:$number){id fields(first:50){nodes{... on ProjectV2SingleSelectField{id name options{id name}}}}}}}";
+
+impl Board {
+    pub fn parse(data: &serde_json::Value) -> Option<Self> {
+        let project = data.get("organization")?.get("projectV2")?;
+        let fields = project
+            .get("fields")?
+            .get("nodes")?
+            .as_array()?
+            .iter()
+            .filter_map(|node| {
+                let options = node
+                    .get("options")?
+                    .as_array()?
+                    .iter()
+                    .filter_map(|o| {
+                        Some((
+                            o.get("name")?.as_str()?.to_owned(),
+                            o.get("id")?.as_str()?.to_owned(),
+                        ))
+                    })
+                    .collect();
+                Some(BoardField {
+                    id: node.get("id")?.as_str()?.to_owned(),
+                    name: node.get("name")?.as_str()?.to_owned(),
+                    options,
+                })
+            })
+            .collect();
+        Some(Self {
+            id: project.get("id")?.as_str()?.to_owned(),
+            fields,
+        })
+    }
+
+    /// `(field id, option id)` of a field's option, both by name, ignoring case.
+    pub fn option(&self, field: &str, option: &str) -> Option<(&str, &str)> {
+        let field = self
+            .fields
+            .iter()
+            .find(|f| f.name.eq_ignore_ascii_case(field))?;
+        let (_, id) = field
+            .options
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(option))?;
+        Some((field.id.as_str(), id.as_str()))
+    }
+
+    /// The option names of a field, in the board's order.
+    pub fn options(&self, field: &str) -> Vec<String> {
+        self.fields
+            .iter()
+            .find(|f| f.name.eq_ignore_ascii_case(field))
+            .map(|f| f.options.iter().map(|(name, _)| name.clone()).collect())
+            .unwrap_or_default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,5 +302,21 @@ mod tests {
             <installation-id>
         );
         assert!(parse_installation(b"{}").is_err());
+    }
+
+    #[test]
+    fn reads_the_board() {
+        let data = serde_json::json!({ "organization": { "projectV2": { "id": "P", "fields": { "nodes": [
+            {},
+            { "id": "F1", "name": "Status", "options": [{ "id": "o1", "name": "Backlog" }, { "id": "o2", "name": "Ready" }] },
+            { "id": "F2", "name": "Phase", "options": [{ "id": "o3", "name": "M8 UI" }] },
+        ]}}}});
+        let board = Board::parse(&data).unwrap();
+        assert_eq!(board.id, "P");
+        assert_eq!(board.option("status", "backlog"), Some(("F1", "o1")));
+        assert_eq!(board.option("Status", "Done"), None);
+        assert_eq!(board.options("Phase"), ["M8 UI"]);
+        assert!(board.options("Priority").is_empty());
+        assert_eq!(Board::parse(&serde_json::json!({})), None);
     }
 }

@@ -11,11 +11,14 @@
 
 use serde_json::{Value, json};
 
+use crate::access::Access;
+use crate::bug::{self, BugReport};
 use crate::interaction::{
-    APPLICATION_COMMAND, AUTOCOMPLETE, CHAT_INPUT, Interaction, MESSAGE_COMPONENT, MODAL_SUBMIT,
-    PING,
+    APPLICATION_COMMAND, AUTOCOMPLETE, CHAT_INPUT, Interaction, MESSAGE, MESSAGE_COMPONENT,
+    MODAL_SUBMIT, PING,
 };
 use crate::reply;
+use crate::review::{self, Draft, Edit, Kind};
 
 /// What the worker does with an interaction.
 #[derive(Debug, Clone, PartialEq)]
@@ -24,6 +27,11 @@ pub enum Action {
     Reply(Value),
     /// Answer "thinking…" now, then run the job and edit the answer with its result.
     Defer { ephemeral: bool, job: Job },
+    /// For a button or a form on a card: acknowledge without a new message, run the job and
+    /// edit the card.
+    DeferUpdate { job: Job },
+    /// Open the edit form of a draft, which the worker reads first.
+    OpenEdit { key: String },
 }
 
 /// Work that needs the network, run after the deferred answer.
@@ -31,38 +39,147 @@ pub enum Action {
 pub enum Job {
     /// `/help`: what the bot is, its commands, the latest nightly and the open issues.
     Help,
+    /// A submitted `/bug` form: make the forum post.
+    Bug(Box<BugReport>),
+    /// `/track` in a thread: read the post and show the review card.
+    TrackThread { channel_id: String, triage: bool },
+    /// Add as bug / Add to backlog: show the review card for one message.
+    TrackMessage(Box<Draft>),
+    /// A button or menu on a review card.
+    Card {
+        action: review::Action,
+        key: String,
+        values: Vec<String>,
+    },
+    /// The submitted edit form of a review card.
+    CardEdit { key: String, edit: Edit },
 }
 
 /// The answer to anything the bot does not handle (yet).
 pub const UNKNOWN: &str = "Suhina does not know this command yet.";
+pub const STAFF_ONLY: &str = "Only moderators and contributors can turn reports into issues.";
+pub const SERVER_ONLY: &str = "This works in the Suhina server only.";
 
-pub fn route(interaction: &Interaction) -> Action {
+pub fn route(interaction: &Interaction, access: Access) -> Action {
     match interaction.kind {
         PING => Action::Reply(reply::pong()),
-        APPLICATION_COMMAND => route_command(interaction),
+        APPLICATION_COMMAND => route_command(interaction, access),
         AUTOCOMPLETE => Action::Reply(json!({ "type": 8, "data": { "choices": [] } })),
-        MESSAGE_COMPONENT | MODAL_SUBMIT => Action::Reply(reply::ephemeral(UNKNOWN)),
+        MESSAGE_COMPONENT => route_component(interaction, access),
+        MODAL_SUBMIT => route_modal(interaction, access),
         _ => Action::Reply(reply::ephemeral(UNKNOWN)),
     }
 }
 
-fn route_command(interaction: &Interaction) -> Action {
+fn private(text: &str) -> Action {
+    Action::Reply(reply::ephemeral(text))
+}
+
+fn route_command(interaction: &Interaction, access: Access) -> Action {
     let Some(data) = interaction.data.as_ref() else {
-        return Action::Reply(reply::ephemeral(UNKNOWN));
+        return private(UNKNOWN);
     };
+    let in_server = interaction.guild_id.is_some();
     match (data.kind.unwrap_or(CHAT_INPUT), data.name.as_deref()) {
         (CHAT_INPUT, Some(help::NAME)) => Action::Defer {
             ephemeral: true,
             job: Job::Help,
         },
-        _ => Action::Reply(reply::ephemeral(UNKNOWN)),
+        (CHAT_INPUT, Some(bug::NAME)) if in_server => Action::Reply(bug::modal()),
+        (CHAT_INPUT, Some(review::NAME)) if in_server => {
+            if !access.staff {
+                return private(STAFF_ONLY);
+            }
+            match interaction.channel_id.clone() {
+                Some(channel_id) => Action::Defer {
+                    ephemeral: true,
+                    job: Job::TrackThread {
+                        channel_id,
+                        triage: access.triage,
+                    },
+                },
+                None => private(UNKNOWN),
+            }
+        }
+        (MESSAGE, Some(name @ (review::ADD_AS_BUG | review::ADD_TO_BACKLOG))) if in_server => {
+            if !access.staff {
+                return private(STAFF_ONLY);
+            }
+            let kind = if name == review::ADD_AS_BUG {
+                Kind::Bug
+            } else {
+                Kind::Feature
+            };
+            let draft = Draft::from_message(
+                interaction.user_id().unwrap_or_default(),
+                kind,
+                interaction.target_message_content().unwrap_or_default(),
+                interaction.target_message_attachments(),
+                access.triage,
+            );
+            Action::Defer {
+                ephemeral: true,
+                job: Job::TrackMessage(Box::new(draft)),
+            }
+        }
+        (_, Some(bug::NAME | review::NAME | review::ADD_AS_BUG | review::ADD_TO_BACKLOG)) => {
+            private(SERVER_ONLY)
+        }
+        _ => private(UNKNOWN),
+    }
+}
+
+fn route_component(interaction: &Interaction, access: Access) -> Action {
+    let Some(data) = interaction.data.as_ref() else {
+        return private(UNKNOWN);
+    };
+    match data.custom_id.as_deref().and_then(review::parse_custom_id) {
+        Some(_) if !access.staff => private(STAFF_ONLY),
+        Some((review::Action::Edit, key)) => Action::OpenEdit { key },
+        Some((action, key)) => Action::DeferUpdate {
+            job: Job::Card {
+                action,
+                key,
+                values: data.values.clone(),
+            },
+        },
+        None => private(UNKNOWN),
+    }
+}
+
+fn route_modal(interaction: &Interaction, access: Access) -> Action {
+    let custom_id = interaction
+        .data
+        .as_ref()
+        .and_then(|data| data.custom_id.as_deref())
+        .unwrap_or_default();
+    if custom_id == bug::MODAL_ID {
+        return match BugReport::from_submit(interaction) {
+            Ok(report) => Action::Defer {
+                ephemeral: true,
+                job: Job::Bug(Box::new(report)),
+            },
+            Err(problem) => private(problem),
+        };
+    }
+    match review::parse_custom_id(custom_id) {
+        Some(_) if !access.staff => private(STAFF_ONLY),
+        Some((review::Action::EditSubmit, key)) => Action::DeferUpdate {
+            job: Job::CardEdit {
+                key,
+                edit: Edit::from_submit(interaction),
+            },
+        },
+        _ => private(UNKNOWN),
     }
 }
 
 /// Every command, in the form Discord's bulk overwrite takes
 /// (`PUT /applications/{id}/commands`). `/help` lists them from here too.
 pub fn definitions() -> Value {
-    json!([help::definition()])
+    let mut all = vec![help::definition(), bug::definition()];
+    all.extend(review::definitions());
+    Value::Array(all)
 }
 
 /// `docs/commands.md`, generated from `definitions` (`suhina-bot-register --markdown`); CI fails
@@ -94,12 +211,9 @@ pub fn markdown(definitions: &Value) -> String {
             .and_then(Value::as_str)
             .unwrap_or_default();
         let kind = command.get("type").and_then(Value::as_u64).unwrap_or(1);
-        let description = command
-            .get("description")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
+        let description = describe(command);
         let who = if command.get("default_member_permissions").is_some() {
-            "Moderators"
+            "Moderators and contributors"
         } else {
             "Everyone"
         };
@@ -125,6 +239,27 @@ pub fn markdown(definitions: &Value) -> String {
         out.push_str(&format!("| {shown} | {usage} | {who} | {description} |\n"));
     }
     out
+}
+
+/// What a command does: its description, or for a message command (whose description Discord
+/// keeps empty) the text from `review::message_command_about`.
+fn describe(command: &Value) -> &str {
+    let name = command
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    match command.get("description").and_then(Value::as_str) {
+        Some(text) if !text.is_empty() => text,
+        _ => review::message_command_about(name),
+    }
+}
+
+fn staff_mark(command: &Value) -> &'static str {
+    if command.get("default_member_permissions").is_some() {
+        " (moderators and contributors)"
+    } else {
+        ""
+    }
 }
 
 pub mod help {
@@ -172,14 +307,14 @@ pub mod help {
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             let kind = command.get("type").and_then(Value::as_u64).unwrap_or(1);
+            let staff = super::staff_mark(command);
             if kind == u64::from(MESSAGE) {
-                lines.push(format!("• Right-click a message › Apps › **{name}**"));
+                lines.push(format!(
+                    "• Right-click a message › Apps › **{name}**{staff}"
+                ));
             } else {
-                let description = command
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                lines.push(format!("• `/{name}`: {description}"));
+                let description = super::describe(command);
+                lines.push(format!("• `/{name}`: {description}{staff}"));
             }
         }
 
@@ -224,25 +359,20 @@ mod tests {
         Interaction::parse(body.as_bytes()).unwrap()
     }
 
+    const STAFF: Access = Access {
+        staff: true,
+        triage: false,
+    };
+    const NOBODY: Access = Access {
+        staff: false,
+        triage: false,
+    };
+
     #[test]
     fn answers_ping_with_pong() {
         assert_eq!(
-            route(&interaction(r#"{"type":1}"#)),
+            route(&interaction(r#"{"type":1}"#), NOBODY),
             Action::Reply(json!({ "type": 1 }))
-        );
-    }
-
-    #[test]
-    fn help_is_suhina() {
-        let action = route(&interaction(
-            r#"{"type":2,"data":{"name":"help","type":1}}"#,
-        ));
-        assert_eq!(
-            action,
-            Action::Defer {
-                ephemeral: true,
-                job: Job::Help
-            }
         );
     }
 
@@ -251,23 +381,22 @@ mod tests {
         let markdown = markdown(&json!([
             { "name": "help", "type": 1, "description": "Help" },
             { "name": "issue", "type": 1, "description": "An issue", "options": [{ "name": "number" }] },
-            { "name": "Add as bug", "type": 3, "description": "", "default_member_permissions": "0" },
+            { "name": "Add as bug", "type": 3, "default_member_permissions": "0" },
         ]));
         assert!(markdown.starts_with("---\n"));
         assert!(markdown.contains("| `/help` | `/help` | Everyone | Help |"));
         assert!(markdown.contains("| `/issue` | `/issue number:…` | Everyone | An issue |"));
-        assert!(
-            markdown.contains(
-                "| Add as bug | Right-click a message › Apps › Add as bug | Moderators |"
-            )
-        );
+        assert!(markdown.contains(
+            "| Add as bug | Right-click a message › Apps › Add as bug | Moderators and contributors | Turn a message into a GitHub bug issue, after a review |"
+        ));
     }
 
     #[test]
     fn defers_help() {
-        let action = route(&interaction(
-            r#"{"type":2,"data":{"name":"help","type":1}}"#,
-        ));
+        let action = route(
+            &interaction(r#"{"type":2,"data":{"name":"help","type":1}}"#),
+            NOBODY,
+        );
         assert_eq!(
             action,
             Action::Defer {
@@ -275,6 +404,109 @@ mod tests {
                 job: Job::Help
             }
         );
+    }
+
+    #[test]
+    fn bug_opens_the_form_for_anyone_in_the_server() {
+        let Action::Reply(answer) = route(
+            &interaction(r#"{"type":2,"guild_id":"g","data":{"name":"bug","type":1}}"#),
+            NOBODY,
+        ) else {
+            panic!()
+        };
+        assert_eq!(answer["type"], 9);
+        let Action::Reply(answer) = route(
+            &interaction(r#"{"type":2,"data":{"name":"bug","type":1}}"#),
+            NOBODY,
+        ) else {
+            panic!()
+        };
+        assert_eq!(answer["data"]["content"], SERVER_ONLY);
+    }
+
+    #[test]
+    fn track_is_for_staff() {
+        let body =
+            r#"{"type":2,"guild_id":"g","channel_id":"t1","data":{"name":"track","type":1}}"#;
+        let Action::Reply(answer) = route(&interaction(body), NOBODY) else {
+            panic!()
+        };
+        assert_eq!(answer["data"]["content"], STAFF_ONLY);
+        assert_eq!(
+            route(&interaction(body), STAFF),
+            Action::Defer {
+                ephemeral: true,
+                job: Job::TrackThread {
+                    channel_id: "t1".to_owned(),
+                    triage: false
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn message_commands_make_a_draft() {
+        let body = r#"{"type":2,"guild_id":"g","member":{"user":{"id":"7"},"roles":[]},
+            "data":{"name":"Add to backlog","type":3,"target_id":"5",
+            "resolved":{"messages":{"5":{"content":"Tempo tap\nPlease add it","attachments":[]}}}}}"#;
+        let Action::Defer {
+            job: Job::TrackMessage(draft),
+            ..
+        } = route(&interaction(body), STAFF)
+        else {
+            panic!()
+        };
+        assert_eq!(draft.title, "Tempo tap");
+        assert_eq!(draft.owner, "7");
+        assert_eq!(draft.kind, Kind::Feature);
+        let Action::Reply(answer) = route(&interaction(body), NOBODY) else {
+            panic!()
+        };
+        assert_eq!(answer["data"]["content"], STAFF_ONLY);
+    }
+
+    #[test]
+    fn card_buttons_and_the_edit_form() {
+        let button = r#"{"type":3,"data":{"custom_id":"track:shots:ab","values":["0"]}}"#;
+        assert_eq!(
+            route(&interaction(button), STAFF),
+            Action::DeferUpdate {
+                job: Job::Card {
+                    action: review::Action::Screenshots,
+                    key: "ab".to_owned(),
+                    values: vec!["0".to_owned()]
+                }
+            }
+        );
+        let edit = r#"{"type":3,"data":{"custom_id":"track:edit:ab"}}"#;
+        assert_eq!(
+            route(&interaction(edit), STAFF),
+            Action::OpenEdit {
+                key: "ab".to_owned()
+            }
+        );
+        let Action::Reply(answer) = route(&interaction(edit), NOBODY) else {
+            panic!()
+        };
+        assert_eq!(answer["data"]["content"], STAFF_ONLY);
+        let submit = r#"{"type":5,"data":{"custom_id":"track:editsubmit:ab","components":[]}}"#;
+        assert!(matches!(
+            route(&interaction(submit), STAFF),
+            Action::DeferUpdate {
+                job: Job::CardEdit { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn a_bug_form_without_a_platform_is_answered_privately() {
+        let body = r#"{"type":5,"data":{"custom_id":"bug:submit","components":[
+            {"type":18,"component":{"type":4,"custom_id":"title","value":"T"}},
+            {"type":18,"component":{"type":4,"custom_id":"what","value":"W"}}]}}"#;
+        let Action::Reply(answer) = route(&interaction(body), NOBODY) else {
+            panic!()
+        };
+        assert_eq!(answer["data"]["content"], "Please choose your platform.");
     }
 
     #[test]
@@ -287,7 +519,7 @@ mod tests {
             r#"{"type":5,"data":{"custom_id":"x"}}"#,
             r#"{"type":99}"#,
         ] {
-            let Action::Reply(answer) = route(&interaction(body)) else {
+            let Action::Reply(answer) = route(&interaction(body), STAFF) else {
                 panic!("{body} was deferred")
             };
             assert_eq!(answer["data"]["flags"], 64, "{body}");
@@ -297,7 +529,9 @@ mod tests {
 
     #[test]
     fn answers_autocomplete_with_no_choices() {
-        let Action::Reply(answer) = route(&interaction(r#"{"type":4,"data":{"name":"x"}}"#)) else {
+        let Action::Reply(answer) =
+            route(&interaction(r#"{"type":4,"data":{"name":"x"}}"#), NOBODY)
+        else {
             panic!()
         };
         assert_eq!(answer["type"], 8);
@@ -310,13 +544,19 @@ mod tests {
         assert!(!all.is_empty());
         for command in all {
             let name = command["name"].as_str().unwrap();
-            assert!(
-                name.len() <= 32
-                    && name
-                        .chars()
+            assert!(name.chars().count() <= 32);
+            if command["type"] == 1 {
+                assert!(
+                    name.chars()
                         .all(|c| c.is_ascii_lowercase() || c == '-' || c == '_')
-            );
-            assert!(command["description"].as_str().unwrap().len() <= 100);
+                );
+                assert!(command["description"].as_str().unwrap().chars().count() <= 100);
+            } else {
+                assert!(
+                    !describe(command).is_empty(),
+                    "{name} has no text for /help"
+                );
+            }
         }
     }
 

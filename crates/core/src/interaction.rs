@@ -28,6 +28,8 @@ pub struct Interaction {
     #[serde(default)]
     pub application_id: String,
     pub guild_id: Option<String>,
+    /// The channel (or thread) the interaction was used in.
+    pub channel_id: Option<String>,
     /// Present in a server: the member, with its roles.
     pub member: Option<Member>,
     /// Present in a direct message.
@@ -40,6 +42,20 @@ pub struct Member {
     pub user: Option<User>,
     #[serde(default)]
     pub roles: Vec<String>,
+    /// The member's permissions in the channel, a decimal bit set.
+    pub permissions: Option<String>,
+}
+
+/// A file attached to a message or uploaded in a modal.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
+pub struct Attachment {
+    pub id: String,
+    pub filename: String,
+    pub content_type: Option<String>,
+    #[serde(default)]
+    pub size: u64,
+    /// Discord's link; signed, valid for about a day.
+    pub url: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -67,6 +83,9 @@ pub struct Data {
     /// Modal fields.
     #[serde(default)]
     pub components: Vec<Value>,
+    /// Chosen options of a select menu (a message component).
+    #[serde(default)]
+    pub values: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -110,27 +129,88 @@ impl Interaction {
             .as_str()
     }
 
-    /// The value of a text field of a submitted modal, by its custom id.
-    pub fn modal_value(&self, custom_id: &str) -> Option<&str> {
-        self.data.as_ref()?.components.iter().find_map(|row| {
-            row.get("components")?.as_array()?.iter().find_map(|field| {
-                (field.get("custom_id")?.as_str()? == custom_id)
-                    .then(|| field.get("value")?.as_str())
-                    .flatten()
-            })
+    /// A field of a submitted modal by its custom id, wherever it sits: in a Label (type 18,
+    /// `component`) or in an action row (type 1, `components`).
+    fn modal_field(&self, custom_id: &str) -> Option<&Value> {
+        self.data.as_ref()?.components.iter().find_map(|top| {
+            let inner: Vec<&Value> = match top.get("component") {
+                Some(one) => vec![one],
+                None => top
+                    .get("components")
+                    .and_then(Value::as_array)
+                    .map(|all| all.iter().collect())
+                    .unwrap_or_default(),
+            };
+            inner
+                .into_iter()
+                .find(|field| field.get("custom_id").and_then(Value::as_str) == Some(custom_id))
         })
+    }
+
+    /// The text of a text field of a submitted modal; `None` when empty or missing.
+    pub fn modal_value(&self, custom_id: &str) -> Option<&str> {
+        self.modal_field(custom_id)?
+            .get("value")?
+            .as_str()
+            .filter(|text| !text.trim().is_empty())
+    }
+
+    /// The chosen values of a select or the attachment ids of a file upload in a modal.
+    pub fn modal_values(&self, custom_id: &str) -> Vec<String> {
+        self.modal_field(custom_id)
+            .and_then(|field| field.get("values"))
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Uploaded files of a modal, in the order of their ids, from `data.resolved.attachments`.
+    pub fn uploaded(&self, ids: &[String]) -> Vec<Attachment> {
+        let Some(all) = self
+            .data
+            .as_ref()
+            .and_then(|data| data.resolved.as_ref())
+            .and_then(|resolved| resolved.get("attachments"))
+        else {
+            return Vec::new();
+        };
+        ids.iter()
+            .filter_map(|id| serde_json::from_value(all.get(id)?.clone()).ok())
+            .collect()
+    }
+
+    /// The message a message command was used on.
+    fn target_message(&self) -> Option<&Value> {
+        let data = self.data.as_ref()?;
+        let target = data.target_id.as_deref()?;
+        data.resolved.as_ref()?.get("messages")?.get(target)
     }
 
     /// The content of the message a message command was used on.
     pub fn target_message_content(&self) -> Option<&str> {
-        let data = self.data.as_ref()?;
-        let target = data.target_id.as_deref()?;
-        data.resolved
-            .as_ref()?
-            .get("messages")?
-            .get(target)?
-            .get("content")?
-            .as_str()
+        self.target_message()?.get("content")?.as_str()
+    }
+
+    /// The attachments of the message a message command was used on.
+    pub fn target_message_attachments(&self) -> Vec<Attachment> {
+        self.target_message()
+            .and_then(|message| message.get("attachments"))
+            .and_then(|all| serde_json::from_value(all.clone()).ok())
+            .unwrap_or_default()
+    }
+
+    /// The member's channel permissions, or 0 outside a server.
+    pub fn permissions(&self) -> u64 {
+        self.member
+            .as_ref()
+            .and_then(|member| member.permissions.as_deref())
+            .and_then(|bits| bits.parse().ok())
+            .unwrap_or(0)
     }
 }
 
@@ -190,5 +270,38 @@ mod tests {
     fn refuses_a_body_that_is_not_an_interaction() {
         assert!(Interaction::parse(b"not json").is_err());
         assert!(Interaction::parse(br#"{"no_type":true}"#).is_err());
+    }
+
+    #[test]
+    fn reads_label_fields_selects_and_uploads() {
+        let body = br#"{"type":5,"channel_id":"c1","member":{"user":{"id":"9"},"roles":[],"permissions":"8"},
+            "data":{"custom_id":"bug","components":[
+              {"type":18,"component":{"type":4,"custom_id":"title","value":"Crash"}},
+              {"type":18,"component":{"type":4,"custom_id":"steps","value":"  "}},
+              {"type":18,"component":{"type":3,"custom_id":"platform","values":["macos-15"]}},
+              {"type":18,"component":{"type":19,"custom_id":"shots","values":["111","222"]}}],
+            "resolved":{"attachments":{
+              "111":{"id":"111","filename":"a.png","content_type":"image/png","size":10,"url":"https://cdn/a"},
+              "222":{"id":"222","filename":"b.jpg","size":20,"url":"https://cdn/b"}}}}}"#;
+        let interaction = Interaction::parse(body).unwrap();
+        assert_eq!(interaction.modal_value("title"), Some("Crash"));
+        assert_eq!(interaction.modal_value("steps"), None);
+        assert_eq!(interaction.modal_values("platform"), ["macos-15"]);
+        let files = interaction.uploaded(&interaction.modal_values("shots"));
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].filename, "a.png");
+        assert_eq!(files[1].content_type, None);
+        assert_eq!(interaction.permissions(), 8);
+        assert_eq!(interaction.channel_id.as_deref(), Some("c1"));
+    }
+
+    #[test]
+    fn reads_the_target_messages_attachments() {
+        let body = br#"{"type":2,"data":{"name":"Add as bug","type":3,"target_id":"5",
+            "resolved":{"messages":{"5":{"content":"x","attachments":[
+              {"id":"1","filename":"s.png","content_type":"image/png","size":3,"url":"https://cdn/s"}]}}}}}"#;
+        let interaction = Interaction::parse(body).unwrap();
+        assert_eq!(interaction.target_message_attachments().len(), 1);
+        assert_eq!(interaction.permissions(), 0);
     }
 }

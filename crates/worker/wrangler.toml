@@ -12,11 +12,29 @@ DISCORD_APPLICATION_ID = "<application-id>"
 DISCORD_PUBLIC_KEY = "<public-key>"
 GITHUB_APP_ID = "<app-id>"
 GITHUB_REPOSITORY = "suhina-daw/suhina-daw"
+# The board new issues go on, in Backlog.
+BOARD_OWNER = "suhina-daw"
+BOARD_NUMBER = "1"
+# Discord: the bug-reports and feature-requests forums, and the roles that turn reports into issues (staff: Mod,
+# github-mod, github-contributor) and that also set Priority and Phase (triage: github-mod),
+# comma-separated IDs. Empty turns the feature off with a message saying so.
+BUG_REPORTS_FORUM_ID = "<discord-id>"
+FEATURE_REQUESTS_FORUM_ID = "<discord-id>"
+STAFF_ROLE_IDS = "<discord-id>,<discord-id>,<discord-id>"
+TRIAGE_ROLE_IDS = "<discord-id>"
+# Public base URL of the screenshots bucket (R2, below); empty keeps screenshots in Discord.
+SCREENSHOTS_URL = ""
 
 # The GitHub installation token, cached for 50 minutes. Nothing else is kept in KV.
 [[kv_namespaces]]
 binding = "CACHE"
 id = "<kv-id>"
+
+# Screenshots a moderator selected for an issue (#10). R2 needs a payment
+# method on the account even within the free allowance; until the bucket exists this stays off.
+# [[r2_buckets]]
+# binding = "SCREENSHOTS"
+# bucket_name = "suhina-bot-screenshots"
 
 # Account links and pending claims: one strongly consistent Durable Object (src/state.rs).
 [durable_objects]
