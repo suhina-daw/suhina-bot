@@ -4,7 +4,7 @@
 //! GitHub signs every webhook delivery with the App's webhook secret: `X-Hub-Signature-256` is
 //! `sha256=` and the hex HMAC-SHA256 of the raw body. A delivery that fails the check is refused.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 
 use crate::Error;

@@ -11,13 +11,13 @@ repository = "https://github.com/suhina-daw/suhina-bot"
 
 [workspace.dependencies]
 suhina-bot-core = { path = "crates/core" }
-base64 = "0.22"
+base64 = "0.23"
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 hex = "0.4"
-hmac = "0.12"
+hmac = "0.13"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 thiserror = "2"
 
 [workspace.lints.rust]
