@@ -1,0 +1,21 @@
+[package]
+name = "suhina-bot-core"
+description = "What the Suhina bot does, without Cloudflare: verifying, parsing and answering Discord interactions, GitHub App tokens and webhooks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+base64.workspace = true
+ed25519-dalek.workspace = true
+hex.workspace = true
+hmac.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,6 @@
+/target/
+crates/worker/build/
+.wrangler/
+node_modules/
+.dev.vars
+*.pem

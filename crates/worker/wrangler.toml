@@ -1,0 +1,30 @@
+# The Suhina bot's Worker. Deploy from this folder with `npx wrangler deploy` (README › Deploying).
+name = "suhina-bot"
+main = "build/index.js"
+compatibility_date = "2026-10-01"
+
+[build]
+command = "worker-build --release"
+
+# Not secret: the Discord application and the GitHub App the bot is, and the repository it works on.
+[vars]
+DISCORD_APPLICATION_ID = "<application-id>"
+DISCORD_PUBLIC_KEY = "<public-key>"
+GITHUB_APP_ID = "<app-id>"
+GITHUB_REPOSITORY = "suhina-daw/suhina-daw"
+
+# The GitHub installation token, cached for 50 minutes. Nothing else is kept in KV.
+[[kv_namespaces]]
+binding = "CACHE"
+id = "<kv-id>"
+
+# Account links and pending claims: one strongly consistent Durable Object (src/state.rs).
+[durable_objects]
+bindings = [{ name = "STATE", class_name = "BotState" }]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["BotState"]
+
+[observability]
+enabled = true

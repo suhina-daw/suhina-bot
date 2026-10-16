@@ -1,0 +1,17 @@
+[package]
+name = "suhina-bot-register"
+description = "Registers the Suhina bot's commands with Discord"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+suhina-bot-core.workspace = true
+serde_json.workspace = true
+ureq = "3"
+
+[lints]
+workspace = true

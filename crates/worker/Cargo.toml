@@ -1,0 +1,25 @@
+[package]
+name = "suhina-bot-worker"
+description = "The Suhina bot on Cloudflare Workers: routes, deferred answers, GitHub calls and the state Durable Object"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+suhina-bot-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+worker = "0.8.7"
+# The Durable Object macro expands to code that names wasm-bindgen directly; same version as worker.
+wasm-bindgen = "=0.2.129"
+# WebCrypto signs the GitHub App JWT (RS256) natively, so no RSA code runs in WebAssembly.
+web-sys = { version = "0.3", features = ["Crypto", "CryptoKey", "SubtleCrypto", "WorkerGlobalScope"] }
+
+[lints]
+workspace = true

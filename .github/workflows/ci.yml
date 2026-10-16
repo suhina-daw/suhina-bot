@@ -1,0 +1,70 @@
+name: CI
+
+# Every pull request and push to main: formatting, clippy (the core and the register CLI on Linux,
+# the worker for WebAssembly), the tests, the licence headers, and cargo-deny's licence, source and
+# advisory checks. Deploying is done by hand (README › Deploying), never from here.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pinned as in Suhina's repository; change the version and the checksum together.
+  CARGO_DENY_VERSION: "0.20.2"
+  CARGO_DENY_SHA256: "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f"
+
+jobs:
+  check:
+    name: fmt, clippy and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - name: clippy (core, register)
+        run: cargo clippy --locked -p suhina-bot-core -p suhina-bot-register --all-targets -- -D warnings
+      - name: clippy (worker, WebAssembly)
+        run: cargo clippy --locked -p suhina-bot-worker --target wasm32-unknown-unknown -- -D warnings
+      - run: cargo test --locked -p suhina-bot-core -p suhina-bot-register
+      - name: docs/commands.md is current
+        run: |
+          cargo run --quiet --locked -p suhina-bot-register -- --markdown > "$RUNNER_TEMP/commands.md"
+          if ! diff -u docs/commands.md "$RUNNER_TEMP/commands.md"; then
+            echo "::error file=docs/commands.md::regenerate it: cargo run -p suhina-bot-register -- --markdown > docs/commands.md"
+            exit 1
+          fi
+
+  headers:
+    name: licence headers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/license_header.py --check
+
+  deny:
+    name: cargo deny (licences, sources, advisories)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cargo-deny
+        run: |
+          name="cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl"
+          curl -sSfL -o "$RUNNER_TEMP/cargo-deny.tar.gz" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/${name}.tar.gz"
+          echo "${CARGO_DENY_SHA256}  $RUNNER_TEMP/cargo-deny.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/cargo-deny.tar.gz" -C "$RUNNER_TEMP"
+          install -m 755 "$RUNNER_TEMP/${name}/cargo-deny" "$HOME/.cargo/bin/cargo-deny"
+      - run: cargo deny --locked check

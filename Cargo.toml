@@ -1,0 +1,39 @@
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/worker", "crates/register"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+rust-version = "1.95"
+repository = "https://github.com/suhina-daw/suhina-bot"
+
+[workspace.dependencies]
+suhina-bot-core = { path = "crates/core" }
+base64 = "0.22"
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+hex = "0.4"
+hmac = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+# The bot never panics: errors become ephemeral answers (README › Rules).
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"
+indexing_slicing = "deny"
+
+[profile.release]
+lto = true
+opt-level = "s"
+codegen-units = 1

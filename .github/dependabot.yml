@@ -1,0 +1,15 @@
+# Weekly updates for the Rust dependencies and the GitHub Actions the workflows use. Security
+# updates come as soon as an advisory is published (Settings › Code security).
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

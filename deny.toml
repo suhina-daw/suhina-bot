@@ -1,0 +1,68 @@
+# cargo-deny: checks every dependency's licence, source and security advisories, the same rules as
+# Suhina (its AGENTS.md rule 9). CI runs `cargo deny --locked check` on every pull request.
+
+[graph]
+all-features = true
+
+[licenses]
+# GPLv3-compatible licences only: MIT, Apache-2.0, BSD, ISC, Zlib, MPL-2.0, LGPL, GPL-3.0. Anything
+# else needs an exception below, for the one crate that needs it, with the reason.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "MPL-2.0",
+    "LGPL-2.1",
+    "LGPL-2.1-or-later",
+    "LGPL-3.0",
+    "LGPL-3.0-or-later",
+    "GPL-3.0",
+    "GPL-3.0-or-later",
+]
+unused-allowed-license = "allow"
+confidence-threshold = 0.93
+
+exceptions = [
+    # Unicode License v3: a permissive licence for Unicode data tables, GPL-compatible. The ICU4X
+    # crates (pulled in through url/idna) and unicode-ident carry it. The same list as Suhina's.
+    { crate = "icu_collections", allow = ["Unicode-3.0"] },
+    { crate = "icu_locale_core", allow = ["Unicode-3.0"] },
+    { crate = "icu_normalizer", allow = ["Unicode-3.0"] },
+    { crate = "icu_normalizer_data", allow = ["Unicode-3.0"] },
+    { crate = "icu_properties", allow = ["Unicode-3.0"] },
+    { crate = "icu_properties_data", allow = ["Unicode-3.0"] },
+    { crate = "icu_provider", allow = ["Unicode-3.0"] },
+    { crate = "litemap", allow = ["Unicode-3.0"] },
+    { crate = "potential_utf", allow = ["Unicode-3.0"] },
+    { crate = "tinystr", allow = ["Unicode-3.0"] },
+    { crate = "unicode-ident", allow = ["Unicode-3.0"] },
+    { crate = "writeable", allow = ["Unicode-3.0"] },
+    { crate = "yoke", allow = ["Unicode-3.0"] },
+    { crate = "yoke-derive", allow = ["Unicode-3.0"] },
+    { crate = "zerofrom", allow = ["Unicode-3.0"] },
+    { crate = "zerofrom-derive", allow = ["Unicode-3.0"] },
+    { crate = "zerotrie", allow = ["Unicode-3.0"] },
+    { crate = "zerovec", allow = ["Unicode-3.0"] },
+    { crate = "zerovec-derive", allow = ["Unicode-3.0"] },
+    # Community Data License Agreement – Permissive 2.0: a permissive licence for data, here
+    # Mozilla's list of root certificates that the register CLI's TLS trusts. No code, no
+    # copyleft; it does not limit how the bot is licensed.
+    { crate = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },
+]
+
+[bans]
+# Two versions of one crate cost build time, not correctness: reported, never failing.
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+# crates.io only. A git or other registry dependency fails until it is added here, with a reason.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+[advisories]
+ignore = []
