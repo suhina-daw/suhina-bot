@@ -14,7 +14,9 @@ pub async fn handle(mut req: Request, env: Env) -> Result<Response> {
         .headers()
         .get("X-Hub-Signature-256")?
         .unwrap_or_default();
-    let body = req.bytes().await?;
+    let Some(body) = crate::body::read(&mut req, crate::body::WEBHOOK_LIMIT).await? else {
+        return Response::error("Too large", 413);
+    };
     let secret = env.secret("GITHUB_WEBHOOK_SECRET")?.to_string();
     if verify_github(&secret, &signature, &body).is_err() {
         return Response::error("Bad signature", 401);

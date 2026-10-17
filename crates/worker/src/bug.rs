@@ -10,12 +10,14 @@ use suhina_bot_core::forum;
 use suhina_bot_core::interaction::Interaction;
 use worker::{Env, Result, console_error};
 
-use crate::discord_api::{Discord, Upload, download};
+use crate::discord_api::{Discord, MAX_DOWNLOAD, Upload, download};
 use crate::settings::Settings;
 use crate::store::Store;
 
 /// One report a minute per person.
 const RATE_SECONDS: u64 = 60;
+/// All of a report's screenshots together; a Worker has 128 MB of memory.
+const MAX_TOTAL: usize = 25 * 1024 * 1024;
 
 /// The private answer to the reporter.
 pub async fn submit(env: &Env, interaction: &Interaction, report: &BugReport) -> Result<String> {
@@ -26,24 +28,37 @@ pub async fn submit(env: &Env, interaction: &Interaction, report: &BugReport) ->
     let reporter = interaction.user_id().unwrap_or_default();
 
     let store = Store::new(env)?;
-    let rate_key = format!("bug-rate:{reporter}");
-    if store.get::<Value>(&rate_key).await?.is_some() {
+    if !store
+        .claim(&format!("bug-rate:{reporter}"), &true, RATE_SECONDS)
+        .await?
+    {
         return Ok("One report a minute, please. Try again in a moment.".to_owned());
     }
-    store.put(&rate_key, &true, Some(RATE_SECONDS)).await?;
 
     let discord = Discord::new(env);
     let forum_channel = discord.channel(forum_id).await?;
     let tag = forum::tag_id(&forum_channel, report.platform.tag);
 
+    // Each file at most MAX_DOWNLOAD, all of them together at most MAX_TOTAL: checked against the
+    // declared sizes first, and again while reading.
     let mut files = Vec::new();
     let mut skipped = 0;
+    let mut total: usize = 0;
     for shot in &report.screenshots {
-        match download(&shot.url).await {
-            Ok(bytes) => files.push(Upload {
-                filename: shot.filename.clone(),
-                bytes,
-            }),
+        let declared = usize::try_from(shot.size).unwrap_or(usize::MAX);
+        let room = MAX_TOTAL.saturating_sub(total).min(MAX_DOWNLOAD);
+        if declared > room {
+            skipped += 1;
+            continue;
+        }
+        match download(&shot.url, room).await {
+            Ok(bytes) => {
+                total = total.saturating_add(bytes.len());
+                files.push(Upload {
+                    filename: shot.filename.clone(),
+                    bytes,
+                });
+            }
             Err(error) => {
                 console_error!("bug screenshot: {error}");
                 skipped += 1;

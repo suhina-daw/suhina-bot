@@ -1,9 +1,9 @@
 ---
 description: How the Suhina bot works - the request flow, the three crates, how it signs in to GitHub, what it stores, and why
-read_when: architecture, how does the bot work, interaction flow, deferred answer, dispatcher, new command, GitHub App token, JWT, WebCrypto, Durable Object, KV, state, webhook, bug report, /bug, /track, review card, clean-room, screenshots, roles
+read_when: architecture, how does the bot work, interaction flow, deferred answer, dispatcher, new command, GitHub App token, JWT, WebCrypto, Durable Object, state, claim, alarm, replay, timestamp, guild, home server, body size, webhook, bug report, /bug, /track, review card, clean-room, screenshots, roles
 type: system
 status: current
-last_verified: 2026-10-16
+last_verified: 2026-10-17
 covers: crates/core, crates/worker, crates/register
 ---
 
@@ -17,8 +17,8 @@ commands nothing runs, and it never reads messages on its own. It writes to GitH
 
 | Crate | Layer | What it holds |
 |---|---|---|
-| `suhina-bot-core` | logic | Everything that needs no network: Discord's signature check (`verify`), reading interactions (`interaction`), who may do what (`access`), the dispatcher and the commands (`commands`), the `/bug` form (`bug`), the review card (`review`), forum tags (`forum`), screenshot checks (`screenshot`), message bodies (`reply`), the App JWT, key format and board (`github`), webhook signatures (`webhook`), the nightly release (`nightly`). Builds and tests on any machine. |
-| `suhina-bot-worker` | Cloudflare | Routes, the network (Discord with `discord_api`, GitHub with `github`), the flows that string them together (`bug`, `track`), settings, the KV token cache, the `BotState` Durable Object and its client (`store`), screenshots into R2 (`screenshots`). As thin as it can be. |
+| `suhina-bot-core` | logic | Everything that needs no network: Discord's signature check (`verify`), reading interactions (`interaction`), who may do what (`access`), the dispatcher and the commands (`commands`), the `/bug` form (`bug`), the review card (`review`), forum tags (`forum`), message bodies (`reply`), the App JWT, key format and board (`github`), webhook signatures (`webhook`), the nightly release (`nightly`). Builds and tests on any machine. |
+| `suhina-bot-worker` | Cloudflare | Routes, the network (Discord with `discord_api`, GitHub with `github`), the flows that string them together (`bug`, `track`), settings (`settings`), size-limited bodies (`body`), the `BotState` Durable Object and its client (`store`). As thin as it can be. |
 | `suhina-bot-register` | tool | Registers the commands with Discord and writes `docs/commands.md`. |
 
 The rule: a decision goes in core, with a test; the worker only carries data in and out. Core
@@ -28,9 +28,12 @@ never depends on `worker`.
 
 ```
 Discord ──POST /interactions──▶ worker::discord::handle
-                                  1. verify Ed25519 over timestamp + body (401 if wrong)
-                                  2. Interaction::parse
-                                  3. core::commands::route ──▶ Action
+                                  1. read the body, at most 64 KB (413 if larger)
+                                  2. verify Ed25519 over timestamp + body (401 if wrong)
+                                  3. the timestamp within 5 minutes (401 if not)
+                                  4. Interaction::parse; claim interaction:<id> (409 if seen)
+                                  5. core::access: home server? staff? triage?
+                                  6. core::commands::route ──▶ Action
                                        Reply(body)            → answered at once
                                        Defer { job, private } → "thinking…" at once, then
                                                                 ctx.wait_until(run_job)
@@ -46,7 +49,17 @@ interaction's token is the credential for the edit and lasts 15 minutes; no bot 
 failed job is logged and the user sees a short apology.
 
 Every message is sent with `allowed_mentions: {"parse": []}` (`reply`), so text from GitHub or
-from a user can never ping anyone. Text is cut to Discord's limits there too.
+from a user can never ping anyone. Text is cut to Discord's limits there too, and an issue is
+always named as a masked link, `[#612](<url>)`.
+
+**A signed request is good once.** Discord signs the timestamp with the body; a request older than
+five minutes is refused, and each interaction id is claimed (step 4) before anything happens, so a
+captured request cannot be sent again.
+
+**Only Suhina's server.** `core::access` gives nobody any rights outside the server named by
+`DISCORD_GUILD_ID`, and the commands that write answer *This works in the Suhina server only*
+there. An administrator of another server the app was added to is nobody. Without the setting
+nothing writes.
 
 ## Bug reports: from Discord to an issue
 
@@ -54,27 +67,35 @@ Anyone reports with `/bug`; nothing reaches GitHub until a moderator has reviewe
 (`enhancement`, issue type Feature) and the thank-you says it is on the backlog.
 
 ```
-/bug ── form (core::bug) ──▶ Job::Bug ──▶ worker::bug: post in #bug-reports, platform tag,
-                                          screenshots attached; "Reported by" names the reporter
+/bug ── form (core::bug) ──▶ Job::Bug ──▶ worker::bug: claim bug-rate:<user>, post in
+                                          #bug-reports, platform tag, screenshots attached
+                                          (each ≤ 10 MB, all ≤ 25 MB); "Reported by" names
+                                          the reporter
 /track in that post ──▶ Job::TrackThread ──▶ worker::track: read the post (title, starter
         message, tags), Draft::from_post, similar issues, board phases ──▶ store draft:<key>
         ──▶ review card (core::review::card), only the moderator sees it
-card buttons ──▶ Job::Card / CardEdit / OpenEdit: select screenshots, Replace, Edit, Check
-Create issue ──▶ copy selected screenshots to R2 ──▶ issue (labels from tags, type) ──▶ board
-        (Backlog, Priority, Phase) ──▶ in the thread: thanks, Tracked tag, ✅ ──▶ tracked:<thread>
+card buttons ──▶ Job::Card / CardEdit / OpenEdit (the card's owner only): Replace, Edit, Check
+Create issue ──▶ claim creating:<post> ──▶ issue (labels from tags, type) ──▶ tracked:<thread>
+        ──▶ board (Backlog, Priority, Phase) ──▶ in the thread: thanks, Tracked tag, ✅
 ```
 
 Why the review: issues are project material that people and agents read, so Suhina's clean-room
 rule applies, and other products are named only where a file format is handled (Suhina's
 AGENTS.md rules 1 and 8). Reports often compare with another DAW and show its screenshots. The
 card marks words from `REVIEW_WORDS` (a secret, so the names are not in this repository), offers
-to replace them with "another DAW", offers the screenshots with none selected, and keeps
-**Create issue** disabled until the moderator confirms. The issue never names, mentions or links
-the reporter or the message.
+to replace them with "another DAW", and keeps **Create issue** disabled until the moderator
+confirms. Screenshots never leave Discord, since they may show another product; the issue counts
+them. The issue never names, mentions or links the reporter or the message.
+
+**An issue is created once.** Create claims `creating:<post>` before calling GitHub, so a second
+press, a second moderator's card for the same post or a replay finds the claim and creates
+nothing; the post is recorded as tracked as soon as the issue exists, before the board and the
+thread are touched.
 
 Who may do what is `core::access`: staff roles (`STAFF_ROLE_IDS`) track reports, triage roles
-(`TRIAGE_ROLE_IDS`) also set Priority and Phase, a server administrator is both. A draft lives
-15 minutes under a random key that the card's buttons carry (`track:<action>:<key>`).
+(`TRIAGE_ROLE_IDS`) also set Priority and Phase, an administrator of Suhina's server is both. A
+draft lives 15 minutes under a random key that the card's buttons carry (`track:<action>:<key>`),
+and only the moderator who opened it may use them.
 
 ## Adding a command
 
@@ -94,7 +115,11 @@ Who may do what is `core::access`: staff roles (`STAFF_ROLE_IDS`) track reports,
    signed RS256 with WebCrypto in the Worker. GitHub hands out the private key as PKCS#1;
    WebCrypto imports only PKCS#8, so `core::github::pkcs8_der` wraps it.
 2. `GET /repos/{repo}/installation` and `POST /app/installations/{id}/access_tokens` with the JWT.
-3. The token is kept in KV for 50 minutes (it lives 60), so most commands sign nothing.
+3. The token is kept in the Durable Object for 50 minutes (it lives 60), so most commands sign
+   nothing.
+
+Issue creation is retried without the issue type only when GitHub refused the type itself (a 422
+naming it); any other failure may already have created the issue, and a retry would open a second.
 
 WebCrypto and not a Rust RSA crate: it is native, so signing costs almost no Worker CPU time, and
 the `rsa` crate has an advisory without a fix (RUSTSEC-2023-0071) that `cargo deny` refuses.
@@ -103,19 +128,20 @@ the `rsa` crate has an advisory without a fix (RUSTSEC-2023-0071) that `cargo de
 
 | Where | What | Why there |
 |---|---|---|
-| KV `CACHE` | the installation token, 50 minutes | a cache; a stale read only costs a new token |
-| R2 `SCREENSHOTS` | screenshots a moderator selected for an issue, under random names | public links that issues show; off until set up (docs/operations.md) |
-| Durable Object `STATE` (`BotState`) | review drafts (`draft:<key>`, 15 minutes), the issue each post became (`tracked:<thread>`), `/bug`'s one-a-minute limit (`bug-rate:<user>`); later account links and pending claims. Each with an optional expiry | one instance, strongly consistent: a GitHub webhook that arrives at another location still finds the claim it answers. KV can take a minute to show a write elsewhere. |
+| Durable Object `STATE` (`BotState`) | the GitHub installation token (`github-token`, 50 minutes), `/help`'s answer (`help-text`, 5 minutes), interactions seen (`interaction:<id>`, 15 minutes), review drafts (`draft:<key>`, 15 minutes), issues being created (`creating:<post or key>`, 15 minutes), the issue each post became (`tracked:<thread>`), `/bug`'s one-a-minute limit (`bug-rate:<user>`); later account links and pending claims | one instance, strongly consistent: a GitHub webhook that arrives at another location still finds the claim it answers, and a claim is decided in one place. It needs no ID in the configuration. |
 
-The Durable Object takes `/get`, `/put` (with `ttl_seconds`) and `/delete`, as JSON on a made-up
-URL (`worker::store` is its client); an expired value reads as missing and is removed. A draft
-holds a report's text for its 15 minutes; nothing else keeps message text, and no OAuth token is
-stored anywhere.
+The Durable Object takes `/get`, `/put` (with `ttl_seconds`), `/claim` and `/delete`, as JSON on a
+made-up URL (`worker::store` is its client). `/claim` stores a value only if the key is free and
+answers 409 if it is taken: one call, and a Durable Object handles one request at a time with its
+storage calls holding others back (input gates), so two claims cannot both win. An expired value
+reads as missing, and an alarm set for the earliest expiry deletes every expired value, so a
+draft left on its card does not outlive its 15 minutes. A draft holds a report's text for that
+time; nothing else keeps message text, and no OAuth token is stored anywhere.
 
 ## The webhook
 
-`POST /github/webhook` checks `X-Hub-Signature-256` against `GITHUB_WEBHOOK_SECRET` (401 if
-wrong). The App subscribes to `issue_comment` only, so the claim bot's answers can be relayed back
+`POST /github/webhook` reads at most 25 MB (GitHub's own limit; 413 if larger) and checks
+`X-Hub-Signature-256` against `GITHUB_WEBHOOK_SECRET` (401 if wrong). The App subscribes to `issue_comment` only, so the claim bot's answers can be relayed back
 to Discord (#9); until then deliveries are accepted and dropped.
 
 ## Errors

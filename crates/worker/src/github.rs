@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! GitHub as the App `suhina-bot` (`suhina-bot[bot]`). The App's JWT is signed with WebCrypto;
-//! the installation token it buys lives an hour and is kept in KV for 50 minutes, so most
+//! the installation token it buys lives an hour and is kept in the bot's state for 50 minutes, so most
 //! commands sign nothing.
 
 use serde_json::{Value, json};
@@ -14,8 +14,11 @@ use worker::wasm_bindgen::{JsCast, JsValue};
 use worker::wasm_bindgen_futures::JsFuture;
 use worker::{Date, Env, Error, Fetch, Headers, Method, Request, RequestInit, Result};
 
+use crate::settings;
+use crate::store::Store;
+
 const API: &str = "https://api.github.com";
-const TOKEN_KEY: &str = "github-installation-token";
+const TOKEN_KEY: &str = "github-token";
 const TOKEN_TTL_SECONDS: u64 = 50 * 60;
 const USER_AGENT: &str = "suhina-bot (+https://github.com/suhina-daw/suhina-bot)";
 
@@ -28,7 +31,7 @@ impl GitHub {
     pub fn new(env: &Env) -> Result<Self> {
         Ok(Self {
             env: env.clone(),
-            repository: env.var("GITHUB_REPOSITORY")?.to_string(),
+            repository: settings::require(env, "GITHUB_REPOSITORY")?,
         })
     }
 
@@ -70,14 +73,19 @@ impl GitHub {
         let path = format!("/repos/{}/issues", self.repository);
         let mut payload =
             json!({ "title": title, "body": body, "labels": labels, "type": issue_type });
+        // Retried without the type only when GitHub refused the type itself (422 naming it); any
+        // other failure may have created the issue already, and a retry would open a second.
         let issue = match self.rest(Method::Post, &path, Some(&payload)).await {
             Ok(issue) => issue,
-            Err(_) => {
+            Err(Error::RustError(message))
+                if message.starts_with("GitHub answered 422") && message.contains("type") =>
+            {
                 if let Some(object) = payload.as_object_mut() {
                     object.remove("type");
                 }
                 self.rest(Method::Post, &path, Some(&payload)).await?
             }
+            Err(error) => return Err(error),
         };
         let number = issue.get("number").and_then(Value::as_u64);
         let url = issue.get("html_url").and_then(Value::as_str);
@@ -202,8 +210,8 @@ impl GitHub {
     }
 
     async fn installation_token(&self) -> Result<String> {
-        let cache = self.env.kv("CACHE")?;
-        if let Some(token) = cache.get(TOKEN_KEY).text().await.map_err(kv_error)? {
+        let store = Store::new(&self.env)?;
+        if let Some(token) = store.get::<String>(TOKEN_KEY).await? {
             return Ok(token);
         }
 
@@ -226,19 +234,15 @@ impl GitHub {
             .map_err(core_error)?
             .token;
 
-        cache
-            .put(TOKEN_KEY, token.as_str())
-            .map_err(kv_error)?
-            .expiration_ttl(TOKEN_TTL_SECONDS)
-            .execute()
-            .await
-            .map_err(kv_error)?;
+        store
+            .put(TOKEN_KEY, &token, Some(TOKEN_TTL_SECONDS))
+            .await?;
         Ok(token)
     }
 
     async fn app_jwt(&self) -> Result<String> {
-        let app_id = self.env.var("GITHUB_APP_ID")?.to_string();
-        let pem = self.env.secret("GITHUB_APP_PRIVATE_KEY")?.to_string();
+        let app_id = settings::require(&self.env, "GITHUB_APP_ID")?;
+        let pem = settings::require(&self.env, "GITHUB_APP_PRIVATE_KEY")?;
         let input = core::jwt_signing_input(&app_id, Date::now().as_millis() / 1000);
         let signature = sign_rs256(&pem, input.as_bytes()).await?;
         Ok(core::jwt(&input, &signature))
@@ -307,8 +311,4 @@ fn parse_answer(status: u16, bytes: &[u8]) -> Result<Value> {
 
 fn core_error(error: suhina_bot_core::Error) -> Error {
     Error::RustError(error.to_string())
-}
-
-fn kv_error(error: worker::KvError) -> Error {
-    Error::RustError(format!("KV: {error}"))
 }

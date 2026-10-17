@@ -223,14 +223,14 @@ mod tests {
 
     #[test]
     fn signing_input_holds_the_app_and_a_short_lifetime() {
-        let input = jwt_signing_input("<app-id>", 1_000_000);
+        let input = jwt_signing_input("12345", 1_000_000);
         let (header, claims) = input.split_once('.').unwrap();
         let header: serde_json::Value =
             serde_json::from_slice(&URL_SAFE_NO_PAD.decode(header).unwrap()).unwrap();
         let claims: serde_json::Value =
             serde_json::from_slice(&URL_SAFE_NO_PAD.decode(claims).unwrap()).unwrap();
         assert_eq!(header["alg"], "RS256");
-        assert_eq!(claims["iss"], "<app-id>");
+        assert_eq!(claims["iss"], "12345");
         assert_eq!(claims["iat"], 999_940);
         assert_eq!(claims["exp"], 1_000_540);
         assert_eq!(jwt(&input, &[1, 2, 3]), format!("{input}.AQID"));
@@ -296,10 +296,10 @@ mod tests {
         .unwrap();
         assert_eq!(token.token, "ghs_x");
         assert_eq!(
-            parse_installation(br#"{"id":<installation-id>,"account":{}}"#)
+            parse_installation(br#"{"id":98765,"account":{}}"#)
                 .unwrap()
                 .id,
-            <installation-id>
+            98765
         );
         assert!(parse_installation(b"{}").is_err());
     }

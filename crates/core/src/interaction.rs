@@ -22,6 +22,9 @@ pub const MESSAGE: u8 = 3;
 pub struct Interaction {
     #[serde(rename = "type")]
     pub kind: u8,
+    /// Discord's id of this interaction; each is answered once.
+    #[serde(default)]
+    pub id: String,
     /// Used to answer later: edit the original answer or send follow-ups (15 minutes).
     #[serde(default)]
     pub token: String,

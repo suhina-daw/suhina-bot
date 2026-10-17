@@ -9,6 +9,18 @@ use ed25519_dalek::{Signature, VerifyingKey};
 
 use crate::Error;
 
+/// How far `X-Signature-Timestamp` may be from the Worker's clock, either way, in seconds. An
+/// older request is a replay of one already answered: Discord sends each interaction once.
+pub const MAX_AGE_SECONDS: u64 = 5 * 60;
+
+/// Whether a signed request's timestamp (seconds since the epoch) is recent enough.
+pub fn is_fresh(timestamp: &str, now_seconds: u64) -> bool {
+    timestamp
+        .trim()
+        .parse::<u64>()
+        .is_ok_and(|at| at.abs_diff(now_seconds) <= MAX_AGE_SECONDS)
+}
+
 /// The application's public key, as the Developer Portal shows it (64 hex characters).
 #[derive(Debug, Clone)]
 pub struct DiscordKey(VerifyingKey);
@@ -90,6 +102,18 @@ mod tests {
             key.verify(&"ab".repeat(63), "1", b"{}"),
             Err(Error::BadSignature)
         );
+    }
+
+    #[test]
+    fn only_recent_timestamps_are_fresh() {
+        assert!(is_fresh("1000", 1000));
+        assert!(is_fresh("1000", 1300));
+        assert!(is_fresh("1300", 1000));
+        assert!(!is_fresh("1000", 1301));
+        assert!(!is_fresh("2000", 1000));
+        assert!(!is_fresh("", 1000));
+        assert!(!is_fresh("-5", 1000));
+        assert!(!is_fresh("12abc", 1000));
     }
 
     #[test]

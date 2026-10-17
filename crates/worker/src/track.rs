@@ -14,20 +14,15 @@ use worker::{Env, Result, console_error};
 
 use crate::discord_api::Discord;
 use crate::github::GitHub;
-use crate::screenshots;
-use crate::settings::Settings;
+use crate::settings::{self, Settings};
 use crate::store::Store;
 
 const NOT_IN_A_POST: &str = "Use `/track` inside a post in #bug-reports or #feature-requests. Elsewhere, right-click a message › Apps › **Add as bug** or **Add to backlog**.";
 const EXPIRED: &str = "This draft has expired (15 minutes). Run the command again.";
+const NOT_YOURS: &str = "This card belongs to the moderator who opened it.";
 /// ✅ in a URL.
 const CHECK_MARK: &str = "%E2%9C%85";
 const TRACKED_TAG: &str = "Tracked";
-
-/// Screenshots can be copied: the bucket and its public URL are both set.
-fn copying(env: &Env, settings: &Settings) -> bool {
-    settings.screenshots_url.is_some() && env.bucket("SCREENSHOTS").is_ok()
-}
 
 fn draft_key(key: &str) -> String {
     format!("draft:{key}")
@@ -52,7 +47,7 @@ pub async fn thread(
     };
     let store = Store::new(env)?;
     if let Some(number) = store.get::<u64>(&format!("tracked:{channel_id}")).await? {
-        let repository = env.var("GITHUB_REPOSITORY")?.to_string();
+        let repository = settings::require(env, "GITHUB_REPOSITORY")?;
         return Ok(review::closed_card(&format!(
             "Already tracked as {}.",
             reply::issue_link_in(&repository, number)
@@ -111,37 +106,32 @@ async fn show_new(env: &Env, settings: &Settings, mut draft: Draft) -> Result<Va
             Err(error) => console_error!("board: {error}"),
         }
     }
-    let key: String = screenshots::random_uuid()?
-        .chars()
-        .filter(char::is_ascii_hexdigit)
-        .take(12)
-        .collect();
+    let key = crate::store::random_key()?;
     Store::new(env)?
         .put(&draft_key(&key), &draft, Some(review::DRAFT_SECONDS))
         .await?;
-    Ok(review::card(
-        &draft,
-        &key,
-        settings.review_words.as_deref(),
-        copying(env, settings),
-    ))
+    Ok(review::card(&draft, &key, settings.review_words.as_deref()))
 }
 
-/// The edit form for a stored draft, or `None` when it has expired.
-pub async fn edit_form(env: &Env, key: &str) -> Result<Option<Value>> {
+/// The edit form for a stored draft, or `None` when it has expired or is someone else's.
+pub async fn edit_form(env: &Env, key: &str, user: &str) -> Result<Option<Value>> {
     let draft: Option<Draft> = Store::new(env)?.get(&draft_key(key)).await?;
-    Ok(draft.map(|draft| review::edit_modal(&draft, key)))
+    Ok(draft
+        .filter(|draft| draft.owner == user)
+        .map(|draft| review::edit_modal(&draft, key)))
 }
 
 /// A button or the menu on a card: the card as it is now.
-pub async fn card_action(env: &Env, key: &str, action: Action, values: &[String]) -> Result<Value> {
+pub async fn card_action(env: &Env, key: &str, user: &str, action: Action) -> Result<Value> {
     let settings = Settings::read(env);
     let store = Store::new(env)?;
     let Some(mut draft) = store.get::<Draft>(&draft_key(key)).await? else {
         return Ok(review::closed_card(EXPIRED));
     };
+    if draft.owner != user {
+        return Ok(review::closed_card(NOT_YOURS));
+    }
     match action {
-        Action::Screenshots => draft.select(values),
         Action::Replace => {
             if let Some(words) = settings.review_words.as_deref() {
                 draft.replace_words(words);
@@ -162,31 +152,24 @@ pub async fn card_action(env: &Env, key: &str, action: Action, values: &[String]
     store
         .put(&draft_key(key), &draft, Some(review::DRAFT_SECONDS))
         .await?;
-    Ok(review::card(
-        &draft,
-        key,
-        settings.review_words.as_deref(),
-        copying(env, &settings),
-    ))
+    Ok(review::card(&draft, key, settings.review_words.as_deref()))
 }
 
 /// The submitted edit form: the card with the new text.
-pub async fn card_edit(env: &Env, key: &str, edit: &Edit) -> Result<Value> {
+pub async fn card_edit(env: &Env, key: &str, user: &str, edit: &Edit) -> Result<Value> {
     let settings = Settings::read(env);
     let store = Store::new(env)?;
     let Some(mut draft) = store.get::<Draft>(&draft_key(key)).await? else {
         return Ok(review::closed_card(EXPIRED));
     };
+    if draft.owner != user {
+        return Ok(review::closed_card(NOT_YOURS));
+    }
     draft.apply_edit(edit);
     store
         .put(&draft_key(key), &draft, Some(review::DRAFT_SECONDS))
         .await?;
-    Ok(review::card(
-        &draft,
-        key,
-        settings.review_words.as_deref(),
-        copying(env, &settings),
-    ))
+    Ok(review::card(&draft, key, settings.review_words.as_deref()))
 }
 
 /// Opens the issue, puts it on the board, marks the post, and closes the card.
@@ -197,21 +180,24 @@ async fn create(
     key: &str,
     draft: &Draft,
 ) -> Result<Value> {
+    // Reserve first: a second press, a second moderator's card for the same post, or a retry
+    // finds the reservation and creates nothing. The reservation is per post for a post, per
+    // draft otherwise, and lasts as long as a draft.
+    let reservation = match &draft.source {
+        Source::Thread { thread_id } => format!("creating:{thread_id}"),
+        Source::Message => format!("creating:{key}"),
+    };
+    if !store
+        .claim(&reservation, &true, review::DRAFT_SECONDS)
+        .await?
+    {
+        return Ok(review::closed_card(
+            "This report is already being turned into an issue.",
+        ));
+    }
     let mut problems: Vec<String> = Vec::new();
 
-    let mut images = Vec::new();
-    let mut not_copied = 0;
-    for shot in draft.chosen() {
-        match screenshots::copy(env, settings, shot).await {
-            Ok(url) => images.push(url),
-            Err(error) => {
-                console_error!("screenshot copy: {error}");
-                not_copied += 1;
-            }
-        }
-    }
-    let left_in_discord = draft.screenshots.len().saturating_sub(draft.selected.len());
-    let body = review::issue_body(draft, &images, left_in_discord, not_copied);
+    let body = review::issue_body(draft);
 
     let github = GitHub::new(env)?;
     let (number, url, node) = github
@@ -222,6 +208,13 @@ async fn create(
             review::issue_type(draft.kind),
         )
         .await?;
+    // Recorded before anything else can fail, so the post never gets a second issue.
+    if let Source::Thread { thread_id } = &draft.source {
+        store
+            .put(&format!("tracked:{thread_id}"), &number, None)
+            .await?;
+    }
+    store.delete(&draft_key(key)).await?;
 
     match github
         .board(&settings.board_owner, settings.board_number)
@@ -264,18 +257,9 @@ async fn create(
             console_error!("reaction: {error}");
             problems.push("the ✅ reaction could not be added".to_owned());
         }
-        store
-            .put(&format!("tracked:{thread_id}"), &number, None)
-            .await?;
     }
-    store.delete(&draft_key(key)).await?;
 
     let mut text = format!("Created {}.", reply::issue_link(number, &url));
-    if not_copied > 0 {
-        text.push_str(&format!(
-            "\n{not_copied} screenshot(s) could not be copied; the issue says so."
-        ));
-    }
     if !problems.is_empty() {
         text.push_str(&format!("\nThe issue exists, but {}.", problems.join(", ")));
     }

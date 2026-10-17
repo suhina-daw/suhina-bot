@@ -46,11 +46,7 @@ pub enum Job {
     /// Add as bug / Add to backlog: show the review card for one message.
     TrackMessage(Box<Draft>),
     /// A button or menu on a review card.
-    Card {
-        action: review::Action,
-        key: String,
-        values: Vec<String>,
-    },
+    Card { action: review::Action, key: String },
     /// The submitted edit form of a review card.
     CardEdit { key: String, edit: Edit },
 }
@@ -79,7 +75,7 @@ fn route_command(interaction: &Interaction, access: Access) -> Action {
     let Some(data) = interaction.data.as_ref() else {
         return private(UNKNOWN);
     };
-    let in_server = interaction.guild_id.is_some();
+    let in_server = access.home;
     match (data.kind.unwrap_or(CHAT_INPUT), data.name.as_deref()) {
         (CHAT_INPUT, Some(help::NAME)) => Action::Defer {
             ephemeral: true,
@@ -114,7 +110,7 @@ fn route_command(interaction: &Interaction, access: Access) -> Action {
                 interaction.user_id().unwrap_or_default(),
                 kind,
                 interaction.target_message_content().unwrap_or_default(),
-                interaction.target_message_attachments(),
+                &interaction.target_message_attachments(),
                 access.triage,
             );
             Action::Defer {
@@ -137,11 +133,7 @@ fn route_component(interaction: &Interaction, access: Access) -> Action {
         Some(_) if !access.staff => private(STAFF_ONLY),
         Some((review::Action::Edit, key)) => Action::OpenEdit { key },
         Some((action, key)) => Action::DeferUpdate {
-            job: Job::Card {
-                action,
-                key,
-                values: data.values.clone(),
-            },
+            job: Job::Card { action, key },
         },
         None => private(UNKNOWN),
     }
@@ -154,6 +146,9 @@ fn route_modal(interaction: &Interaction, access: Access) -> Action {
         .and_then(|data| data.custom_id.as_deref())
         .unwrap_or_default();
     if custom_id == bug::MODAL_ID {
+        if !access.home {
+            return private(SERVER_ONLY);
+        }
         return match BugReport::from_submit(interaction) {
             Ok(report) => Action::Defer {
                 ephemeral: true,
@@ -360,10 +355,19 @@ mod tests {
     }
 
     const STAFF: Access = Access {
+        home: true,
         staff: true,
         triage: false,
     };
+    /// A member of Suhina's server without a staff role.
     const NOBODY: Access = Access {
+        home: true,
+        staff: false,
+        triage: false,
+    };
+    /// Someone in another server or a direct message.
+    const ELSEWHERE: Access = Access {
+        home: false,
         staff: false,
         triage: false,
     };
@@ -416,9 +420,14 @@ mod tests {
         };
         assert_eq!(answer["type"], 9);
         let Action::Reply(answer) = route(
-            &interaction(r#"{"type":2,"data":{"name":"bug","type":1}}"#),
-            NOBODY,
+            &interaction(r#"{"type":2,"guild_id":"other","data":{"name":"bug","type":1}}"#),
+            ELSEWHERE,
         ) else {
+            panic!()
+        };
+        assert_eq!(answer["data"]["content"], SERVER_ONLY);
+        let submit = r#"{"type":5,"data":{"custom_id":"bug:submit","components":[]}}"#;
+        let Action::Reply(answer) = route(&interaction(submit), ELSEWHERE) else {
             panic!()
         };
         assert_eq!(answer["data"]["content"], SERVER_ONLY);
@@ -467,14 +476,13 @@ mod tests {
 
     #[test]
     fn card_buttons_and_the_edit_form() {
-        let button = r#"{"type":3,"data":{"custom_id":"track:shots:ab","values":["0"]}}"#;
+        let button = r#"{"type":3,"data":{"custom_id":"track:check:ab"}}"#;
         assert_eq!(
             route(&interaction(button), STAFF),
             Action::DeferUpdate {
                 job: Job::Card {
-                    action: review::Action::Screenshots,
-                    key: "ab".to_owned(),
-                    values: vec!["0".to_owned()]
+                    action: review::Action::Check,
+                    key: "ab".to_owned()
                 }
             }
         );

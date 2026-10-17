@@ -5,6 +5,7 @@
 //! rest (reading a post, making one, tags, reactions) needs the bot token, the Worker secret
 //! `DISCORD_BOT_TOKEN`.
 
+use futures_util::StreamExt;
 use serde_json::Value;
 use suhina_bot_core::reply::shorten;
 use web_sys::{Blob, FormData};
@@ -160,8 +161,9 @@ pub async fn edit_original(application: &str, token: &str, body: &Value) -> Resu
     .map(|_| ())
 }
 
-/// A file from Discord's CDN, refused when larger than `MAX_DOWNLOAD`.
-pub async fn download(url: &str) -> Result<Vec<u8>> {
+/// A file from Discord's CDN, at most `limit` bytes. The declared length is checked before
+/// reading, and reading stops as soon as the limit is passed, so a large file never fills memory.
+pub async fn download(url: &str, limit: usize) -> Result<Vec<u8>> {
     if !url.starts_with("https://cdn.discordapp.com/")
         && !url.starts_with("https://media.discordapp.net/")
     {
@@ -176,9 +178,22 @@ pub async fn download(url: &str) -> Result<Vec<u8>> {
             response.status_code()
         )));
     }
-    let bytes = response.bytes().await?;
-    if bytes.len() > MAX_DOWNLOAD {
-        return Err(Error::RustError("attachment too large".into()));
+    let too_large = || Error::RustError("attachment too large".into());
+    let declared = response
+        .headers()
+        .get("Content-Length")?
+        .and_then(|length| length.parse::<usize>().ok());
+    if declared.is_some_and(|length| length > limit) {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::with_capacity(declared.unwrap_or(0).min(limit));
+    let mut stream = response.stream()?;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if bytes.len().saturating_add(chunk.len()) > limit {
+            return Err(too_large());
+        }
+        bytes.extend_from_slice(&chunk);
     }
     Ok(bytes)
 }

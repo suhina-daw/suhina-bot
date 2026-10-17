@@ -16,7 +16,6 @@ pub mod interaction;
 pub mod nightly;
 pub mod reply;
 pub mod review;
-pub mod screenshot;
 pub mod verify;
 pub mod webhook;
 

@@ -951,7 +951,9 @@ dependencies = [
 name = "suhina-bot-worker"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "serde",
+ "serde-wasm-bindgen",
  "serde_json",
  "suhina-bot-core",
  "wasm-bindgen",

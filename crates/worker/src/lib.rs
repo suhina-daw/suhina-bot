@@ -5,11 +5,11 @@
 //! GitHub sends the App's webhook deliveries to `POST /github/webhook`; nothing else runs. What to
 //! answer is decided in `suhina-bot-core`; this crate does the network and the storage.
 
+mod body;
 mod bug;
 mod discord;
 mod discord_api;
 mod github;
-mod screenshots;
 mod settings;
 mod state;
 mod store;

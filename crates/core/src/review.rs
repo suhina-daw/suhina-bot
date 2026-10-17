@@ -4,13 +4,15 @@
 //! Turning a report into a GitHub issue: the draft a moderator reviews before anything reaches
 //! GitHub. Issues are project material that people and agents read, so the clean-room rule
 //! applies (Suhina's AGENTS.md rule 1) and other products are named only where a file format is
-//! handled (rule 8). Reports often compare with another DAW and show its screenshots, so the
-//! card leads the moderator through cleaning them out:
+//! handled (rule 8). Reports often compare with another DAW, so the card leads the moderator
+//! through cleaning the text:
 //!
-//! 1. the text, with words from the setting `REVIEW_WORDS` in bold and a button that replaces
-//!    them with "another DAW";
-//! 2. the screenshots, none selected by default: only those that show Suhina alone go in;
-//! 3. a confirmation, before which **Create issue** stays disabled.
+//! 1. words from the setting `REVIEW_WORDS` in bold, and a button that replaces them with
+//!    "another DAW";
+//! 2. a confirmation, before which **Create issue** stays disabled.
+//!
+//! Screenshots never leave Discord: they may show another product, and nothing copies them. The
+//! issue says how many the report has.
 //!
 //! The draft lives in the bot's state for 15 minutes under a short random key that every button
 //! carries in its custom id (`track:<action>:<key>`).
@@ -105,9 +107,8 @@ pub struct Draft {
     pub title: String,
     pub body: String,
     pub labels: Vec<String>,
-    pub screenshots: Vec<Attachment>,
-    /// Indexes into `screenshots`.
-    pub selected: Vec<usize>,
+    /// How many screenshots the report has; they stay in Discord.
+    pub screenshots: usize,
     pub reviewed: bool,
     /// May set Priority and Phase.
     pub triage: bool,
@@ -150,17 +151,16 @@ pub fn labels(kind: Kind, tags: &[String]) -> Vec<String> {
     out
 }
 
-/// Images only, at most ten (a select menu's limit).
-fn images(attachments: Vec<Attachment>) -> Vec<Attachment> {
+/// How many of the attachments are images.
+fn images(attachments: &[Attachment]) -> usize {
     attachments
-        .into_iter()
+        .iter()
         .filter(|a| {
             a.content_type
                 .as_deref()
                 .is_some_and(|t| t.starts_with("image/"))
         })
-        .take(10)
-        .collect()
+        .count()
 }
 
 impl Draft {
@@ -179,11 +179,8 @@ impl Draft {
                 thread_id: post.thread_id.to_owned(),
             },
             post.title,
-            &body.join(
-                "
-",
-            ),
-            post.attachments,
+            &body.join("\n"),
+            &post.attachments,
             labels(kind, post.tags),
             triage,
         )
@@ -194,7 +191,7 @@ impl Draft {
         owner: &str,
         kind: Kind,
         content: &str,
-        attachments: Vec<Attachment>,
+        attachments: &[Attachment],
         triage: bool,
     ) -> Self {
         let title = content
@@ -220,7 +217,7 @@ impl Draft {
         source: Source,
         title: &str,
         body: &str,
-        attachments: Vec<Attachment>,
+        attachments: &[Attachment],
         labels: Vec<String>,
         triage: bool,
     ) -> Self {
@@ -232,7 +229,6 @@ impl Draft {
             body: shorten(body.trim(), BODY_LIMIT),
             labels,
             screenshots: images(attachments),
-            selected: Vec::new(),
             reviewed: false,
             triage,
             priority: None,
@@ -240,27 +236,6 @@ impl Draft {
             phases: Vec::new(),
             similar: Vec::new(),
         }
-    }
-
-    /// The selected screenshots, in order.
-    pub fn chosen(&self) -> Vec<&Attachment> {
-        self.selected
-            .iter()
-            .filter_map(|i| self.screenshots.get(*i))
-            .collect()
-    }
-
-    /// The menu's values are the indexes as text; anything else is ignored. A change of the text
-    /// or the screenshots asks for the review again.
-    pub fn select(&mut self, values: &[String]) {
-        self.selected = values
-            .iter()
-            .filter_map(|v| v.parse::<usize>().ok())
-            .filter(|i| *i < self.screenshots.len())
-            .collect();
-        self.selected.sort_unstable();
-        self.selected.dedup();
-        self.reviewed = false;
     }
 
     pub fn replace_words(&mut self, words: &[String]) {
@@ -390,7 +365,6 @@ pub fn replace(text: &str, words: &[String], with: &str) -> String {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
-    Screenshots,
     Edit,
     Replace,
     Check,
@@ -399,8 +373,7 @@ pub enum Action {
     EditSubmit,
 }
 
-const ACTIONS: [(Action, &str); 7] = [
-    (Action::Screenshots, "shots"),
+const ACTIONS: [(Action, &str); 6] = [
     (Action::Edit, "edit"),
     (Action::Replace, "replace"),
     (Action::Check, "check"),
@@ -431,9 +404,8 @@ fn button(label: &str, style: u8, id: String, disabled: bool) -> Value {
 }
 
 /// The review card, as the body of a message edit. `words` is `None` when `REVIEW_WORDS` is
-/// missing or malformed; `copying` is false when screenshots cannot be copied (no bucket), and
-/// then none are offered.
-pub fn card(draft: &Draft, key: &str, words: Option<&[String]>, copying: bool) -> Value {
+/// missing or malformed.
+pub fn card(draft: &Draft, key: &str, words: Option<&[String]>) -> Value {
     let words_found = words.map(|w| {
         let mut all = found(&draft.title, w);
         for word in found(&draft.body, w) {
@@ -477,19 +449,11 @@ pub fn card(draft: &Draft, key: &str, words: Option<&[String]>, copying: bool) -
             found.join(", ")
         )),
     }
-    if !draft.screenshots.is_empty() {
-        lines.push(if copying {
-            format!(
-                "**Screenshots:** {} in the report, {} selected. Select only screenshots that show Suhina alone.",
-                draft.screenshots.len(),
-                draft.selected.len()
-            )
-        } else {
-            format!(
-                "**Screenshots:** {} in the report. Copying screenshots is not set up, so they stay in Discord.",
-                draft.screenshots.len()
-            )
-        });
+    if draft.screenshots > 0 {
+        lines.push(format!(
+            "**Screenshots:** {} in the report. They stay in Discord; the issue says how many.",
+            draft.screenshots
+        ));
     }
     if !draft.similar.is_empty() {
         let similar: Vec<String> = draft
@@ -505,35 +469,15 @@ pub fn card(draft: &Draft, key: &str, words: Option<&[String]>, copying: bool) -
     lines.push(if draft.reviewed {
         "✅ Checked. **Create issue** is ready.".to_owned()
     } else {
-        "Check the text and screenshots, then confirm.".to_owned()
+        "Check the text, then confirm.".to_owned()
     });
 
     let mut rows = Vec::new();
-    if copying && !draft.screenshots.is_empty() {
-        let options: Vec<Value> = draft
-            .screenshots
-            .iter()
-            .enumerate()
-            .map(|(i, shot)| {
-                json!({
-                    "label": shorten(&format!("{}. {}", i + 1, shot.filename), 100),
-                    "value": i.to_string(),
-                    "description": crate::nightly::megabytes(shot.size),
-                    "default": draft.selected.contains(&i),
-                })
-            })
-            .collect();
-        rows.push(json!({ "type": 1, "components": [{
-            "type": 3, "custom_id": custom_id(Action::Screenshots, key),
-            "placeholder": "Screenshots that show Suhina alone (none by default)",
-            "min_values": 0, "max_values": options.len(), "options": options,
-        }]}));
-    }
     let nothing_to_replace = words_found.as_ref().is_none_or(Vec::is_empty);
     rows.push(json!({ "type": 1, "components": [
         button("Edit", 2, custom_id(Action::Edit, key), false),
         button(&format!("Replace with \"{REPLACEMENT}\""), 2, custom_id(Action::Replace, key), nothing_to_replace),
-        button(if draft.reviewed { "Checked ✓" } else { "I've checked the text and screenshots" }, 3, custom_id(Action::Check, key), draft.reviewed),
+        button(if draft.reviewed { "Checked ✓" } else { "I've checked the text" }, 3, custom_id(Action::Check, key), draft.reviewed),
     ]}));
     rows.push(json!({ "type": 1, "components": [
         button("Create issue", 1, custom_id(Action::Create, key), !draft.reviewed),
@@ -592,14 +536,9 @@ pub fn edit_modal(draft: &Draft, key: &str) -> Value {
 // ---------------------------------------------------------------------------------------------
 // The issue and the thread
 
-/// The issue's body. Names, mentions and links no one; `images` are the copied screenshots'
-/// public URLs, `left_in_discord` those not selected, `not_copied` selected ones that failed.
-pub fn issue_body(
-    draft: &Draft,
-    images: &[String],
-    left_in_discord: usize,
-    not_copied: usize,
-) -> String {
+/// The issue's body. Names, mentions and links no one; the screenshots stay in Discord and are
+/// only counted.
+pub fn issue_body(draft: &Draft) -> String {
     let mut parts = vec![
         match draft.kind {
             Kind::Bug => "Bug report from Discord.",
@@ -608,29 +547,12 @@ pub fn issue_body(
         .to_owned(),
         draft.body.clone(),
     ];
-    let shots: Vec<String> = images
-        .iter()
-        .enumerate()
-        .map(|(i, url)| format!("![Screenshot {}]({url})", i + 1))
-        .collect();
-    if !shots.is_empty() {
-        parts.push(shots.join("\n"));
-    }
-    let mut notes = Vec::new();
-    if left_in_discord > 0 {
-        notes.push(format!(
-            "{left_in_discord} more screenshot{} in the Discord report.",
-            plural(left_in_discord)
+    if draft.screenshots > 0 {
+        parts.push(format!(
+            "_{} screenshot{} in the Discord report._",
+            draft.screenshots,
+            plural(draft.screenshots)
         ));
-    }
-    if not_copied > 0 {
-        notes.push(format!(
-            "{not_copied} screenshot{} could not be copied.",
-            plural(not_copied)
-        ));
-    }
-    if !notes.is_empty() {
-        parts.push(format!("_{}_", notes.join(" ")));
     }
     parts.join("\n\n")
 }
@@ -738,7 +660,7 @@ mod tests {
             false,
         );
         assert_eq!(draft.labels, ["enhancement", "from-discord", "ui"]);
-        assert!(issue_body(&draft, &[], 0, 0).starts_with("Feature request from Discord."));
+        assert!(issue_body(&draft).starts_with("Feature request from Discord."));
         assert!(thanks(Kind::Feature, 3, "u").starts_with("Thanks for the idea!"));
         assert!(thanks(Kind::Bug, 3, "https://x/3").contains("as [#3](<https://x/3>)."));
         assert!(thanks(Kind::Bug, 3, "u").starts_with("Thanks for the bug report!"));
@@ -780,73 +702,49 @@ mod tests {
     }
 
     #[test]
-    fn no_screenshot_is_selected_by_default_and_changes_ask_for_a_new_review() {
+    fn changes_ask_for_a_new_review() {
         let mut draft = draft();
-        assert!(draft.selected.is_empty());
-        draft.reviewed = true;
-        draft.select(&[
-            "1".to_owned(),
-            "9".to_owned(),
-            "x".to_owned(),
-            "1".to_owned(),
-        ]);
-        assert_eq!(draft.selected, [1]);
-        assert!(!draft.reviewed);
-        assert_eq!(draft.chosen()[0].filename, "b.png");
         draft.reviewed = true;
         draft.replace_words(&words());
         assert!(!draft.reviewed);
     }
 
     #[test]
-    fn only_images_are_offered() {
+    fn only_images_are_counted() {
         let mut text = shot("notes.txt");
         text.content_type = Some("text/plain".to_owned());
         let draft = Draft::from_message(
             "7",
             Kind::Feature,
             "Idea\nMore",
-            vec![text, shot("c.png")],
+            &[text, shot("c.png")],
             false,
         );
-        assert_eq!(draft.screenshots.len(), 1);
+        assert_eq!(draft.screenshots, 1);
         assert_eq!(draft.title, "Idea");
     }
 
     #[test]
     fn create_is_disabled_until_checked() {
         let mut draft = draft();
-        let card_body = card(&draft, "ab12", Some(&words()), true);
-        let create = &card_body["components"][2]["components"][0];
+        let card_body = card(&draft, "ab12", Some(&words()));
+        let create = &card_body["components"][1]["components"][0];
         assert_eq!(create["label"], "Create issue");
         assert_eq!(create["disabled"], true);
         let content = card_body["content"].as_str().unwrap();
         assert!(content.contains("**2 product names found:** daw one, Beatbox"));
-        assert!(content.contains("2 in the report, 0 selected"));
+        assert!(content.contains("**Screenshots:** 2 in the report. They stay in Discord"));
+        assert_eq!(card_body["components"].as_array().unwrap().len(), 2);
         draft.reviewed = true;
         assert_eq!(
-            card(&draft, "ab12", Some(&words()), true)["components"][2]["components"][0]["disabled"],
+            card(&draft, "ab12", Some(&words()))["components"][1]["components"][0]["disabled"],
             false
         );
     }
 
     #[test]
-    fn without_copying_no_screenshot_is_offered() {
-        let card_body = card(&draft(), "ab12", None, false);
-        assert!(
-            card_body["content"]
-                .as_str()
-                .unwrap()
-                .contains("they stay in Discord")
-        );
-        let rows = card_body["components"].as_array().unwrap();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0]["components"][0]["type"], 2);
-    }
-
-    #[test]
     fn the_card_says_when_the_check_is_off() {
-        let card_body = card(&draft(), "ab12", None, true);
+        let card_body = card(&draft(), "ab12", None);
         assert!(
             card_body["content"]
                 .as_str()
@@ -854,7 +752,7 @@ mod tests {
                 .contains("check is off")
         );
         assert_eq!(
-            card_body["components"][1]["components"][1]["disabled"],
+            card_body["components"][0]["components"][1]["disabled"],
             true
         );
     }
@@ -914,14 +812,12 @@ mod tests {
 
     #[test]
     fn the_issue_body_names_no_one() {
-        let mut draft = draft();
-        draft.select(&["0".to_owned()]);
-        let body = issue_body(&draft, &["https://img/1.png".to_owned()], 1, 0);
+        let draft = draft();
+        let body = issue_body(&draft);
         assert!(body.starts_with("Bug report from Discord.\n\n**What happened**"));
-        assert!(body.contains("![Screenshot 1](https://img/1.png)"));
-        assert!(body.ends_with("_1 more screenshot in the Discord report._"));
+        assert!(body.ends_with("_2 screenshots in the Discord report._"));
         assert!(!body.contains("<@"));
-        assert!(issue_body(&draft, &[], 0, 2).contains("2 screenshots could not be copied."));
+        assert!(!body.contains("https://cdn"));
     }
 
     #[test]

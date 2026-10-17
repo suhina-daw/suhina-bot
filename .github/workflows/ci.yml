@@ -12,6 +12,9 @@ on:
 permissions:
   contents: read
 
+# Third-party actions are pinned to a commit, so a moved tag cannot change what runs here;
+# Dependabot (.github/dependabot.yml) updates the pins.
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -27,12 +30,12 @@ jobs:
     name: fmt, clippy and tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: wasm32-unknown-unknown
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo fmt --all --check
       - name: clippy (core, register)
         run: cargo clippy --locked -p suhina-bot-core -p suhina-bot-register --all-targets -- -D warnings
@@ -51,14 +54,14 @@ jobs:
     name: licence headers
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: python3 scripts/license_header.py --check
 
   deny:
     name: cargo deny (licences, sources, advisories)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install cargo-deny
         run: |
           name="cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl"
