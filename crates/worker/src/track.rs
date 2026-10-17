@@ -3,7 +3,7 @@
 
 //! `/track` and the message commands: read the report, keep a draft, show the review card, and
 //! on **Create issue** open the issue, put it on the board and mark the post
-//! (#7). What the card says and allows is decided in core (`review`).
+//! (#5). What the card says and allows is decided in core (`review`).
 
 use serde_json::Value;
 use suhina_bot_core::forum;

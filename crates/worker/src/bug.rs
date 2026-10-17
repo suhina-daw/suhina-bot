@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `/bug`: a submitted form becomes a post in the bug-reports forum, with the platform's tag
-//! and the screenshots. Nothing goes to GitHub here (#11).
+//! and the screenshots. Nothing goes to GitHub here (#9).
 
 use serde_json::Value;
 use suhina_bot_core::bug::BugReport;

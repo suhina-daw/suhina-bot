@@ -142,7 +142,7 @@ time; nothing else keeps message text, and no OAuth token is stored anywhere.
 
 `POST /github/webhook` reads at most 25 MB (GitHub's own limit; 413 if larger) and checks
 `X-Hub-Signature-256` against `GITHUB_WEBHOOK_SECRET` (401 if wrong). The App subscribes to `issue_comment` only, so the claim bot's answers can be relayed back
-to Discord (#9); until then deliveries are accepted and dropped.
+to Discord (#7); until then deliveries are accepted and dropped.
 
 ## Errors
 

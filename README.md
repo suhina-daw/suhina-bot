@@ -7,7 +7,7 @@ only and never reads messages on its own.
 
 A Cloudflare Worker in Rust ([workers-rs](https://github.com/cloudflare/workers-rs)) that writes to
 GitHub as the App `suhina-bot` (`suhina-bot[bot]`). The plan is
-[#3](https://github.com/suhina-daw/suhina-bot/issues/3).
+[#1](https://github.com/suhina-daw/suhina-bot/issues/1).
 
 ## Documentation
 

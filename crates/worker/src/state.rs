@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The bot's state: review drafts, which issue a post became, interactions already handled,
-//! `/bug`'s rate limit, and later account links (#8) and pending claims (#9). One Durable Object
+//! `/bug`'s rate limit, and later account links (#6) and pending claims (#7). One Durable Object
 //! instance holds it all, so a read always sees the last write, wherever the request arrives; KV
 //! could not promise that.
 //!
