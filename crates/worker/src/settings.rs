@@ -19,6 +19,8 @@ pub struct Settings {
     pub feature_forum: Option<String>,
     /// `REVIEW_WORDS`; `None` turns the check off.
     pub review_words: Option<Vec<String>>,
+    /// The reaction on a tracked report, `TRACKED_EMOJI` (a server emoji), as a URL part.
+    pub reaction: String,
     /// The board: organization login and project number.
     pub board_owner: String,
     pub board_number: u64,
@@ -50,6 +52,7 @@ impl Settings {
             bug_forum: get(env, "BUG_REPORTS_FORUM_ID"),
             feature_forum: get(env, "FEATURE_REQUESTS_FORUM_ID"),
             review_words: get(env, "REVIEW_WORDS").and_then(|words| review::parse_words(&words)),
+            reaction: review::reaction(get(env, "TRACKED_EMOJI").as_deref()),
             board_owner: get(env, "BOARD_OWNER").unwrap_or_else(|| "suhina-daw".to_owned()),
             board_number: get(env, "BOARD_NUMBER")
                 .and_then(|n| n.parse().ok())

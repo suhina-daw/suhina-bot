@@ -54,6 +54,7 @@ line that is kept in history: paste it at the prompt, or pipe it from the passwo
 | `FEATURE_REQUESTS_FORUM_ID` | the forum `feature-requests`: `/track` there makes a feature request | as above |
 | `STAFF_ROLE_IDS` | roles that may use `/track` and the message commands (`Mod`, `github-mod`, `github-contributor`), comma-separated | Server Settings › Roles › right-click a role › Copy Role ID |
 | `TRIAGE_ROLE_IDS` | roles that also set Priority and Phase (`github-mod`) | as above |
+| `TRACKED_EMOJI` | the server emoji the bot reacts with on a report that became an issue, as `<:github:…>`. Unset: ✅ | type `\:github:` in a channel of the server and copy what the message shows |
 | `REVIEW_WORDS` | a JSON array of product names the review card marks, e.g. `'["…", "…"]'`; include old and new names of a renamed product. Unset: the card says the check is off | the maintainer's list |
 | `GITHUB_APP_ID` | the GitHub App | the App's General page |
 | `GITHUB_APP_PRIVATE_KEY` | the App's private key, the whole `.pem` | the App's Credentials › Key pairs |

@@ -109,6 +109,8 @@ fn route_command(interaction: &Interaction, access: Access) -> Action {
             let draft = Draft::from_message(
                 interaction.user_id().unwrap_or_default(),
                 kind,
+                interaction.channel_id.as_deref().unwrap_or_default(),
+                interaction.target_message_id().unwrap_or_default(),
                 interaction.target_message_content().unwrap_or_default(),
                 &interaction.target_message_attachments(),
                 access.triage,
@@ -349,6 +351,7 @@ pub mod help {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::review::Source;
 
     fn interaction(body: &str) -> Interaction {
         Interaction::parse(body.as_bytes()).unwrap()
@@ -455,7 +458,7 @@ mod tests {
 
     #[test]
     fn message_commands_make_a_draft() {
-        let body = r#"{"type":2,"guild_id":"g","member":{"user":{"id":"7"},"roles":[]},
+        let body = r#"{"type":2,"guild_id":"g","channel_id":"c1","member":{"user":{"id":"7"},"roles":[]},
             "data":{"name":"Add to backlog","type":3,"target_id":"5",
             "resolved":{"messages":{"5":{"content":"Tempo tap\nPlease add it","attachments":[]}}}}}"#;
         let Action::Defer {
@@ -468,6 +471,14 @@ mod tests {
         assert_eq!(draft.title, "Tempo tap");
         assert_eq!(draft.owner, "7");
         assert_eq!(draft.kind, Kind::Feature);
+        assert_eq!(
+            draft.source,
+            Source::Message {
+                channel_id: "c1".to_owned(),
+                message_id: "5".to_owned()
+            }
+        );
+        assert_eq!(draft.source.message_id(), "5");
         let Action::Reply(answer) = route(&interaction(body), NOBODY) else {
             panic!()
         };

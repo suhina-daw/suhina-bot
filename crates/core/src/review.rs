@@ -76,8 +76,22 @@ pub enum Kind {
 pub enum Source {
     /// A post in the bug-reports forum: its thread, whose starter message has the same id.
     Thread { thread_id: String },
-    /// A single message elsewhere.
-    Message,
+    /// A single message: the bot answers it and reacts to it.
+    Message {
+        channel_id: String,
+        message_id: String,
+    },
+}
+
+impl Source {
+    /// The message the report is: a post's starter message has the thread's id. Keys what is
+    /// tracked, so one message never becomes two issues.
+    pub fn message_id(&self) -> &str {
+        match self {
+            Source::Thread { thread_id } => thread_id,
+            Source::Message { message_id, .. } => message_id,
+        }
+    }
 }
 
 /// A forum post as read from Discord.
@@ -187,9 +201,12 @@ impl Draft {
     }
 
     /// From one message: the title is its first line.
+    #[allow(clippy::too_many_arguments)]
     pub fn from_message(
         owner: &str,
         kind: Kind,
+        channel_id: &str,
+        message_id: &str,
         content: &str,
         attachments: &[Attachment],
         triage: bool,
@@ -201,7 +218,10 @@ impl Draft {
         Self::new(
             owner,
             kind,
-            Source::Message,
+            Source::Message {
+                channel_id: channel_id.to_owned(),
+                message_id: message_id.to_owned(),
+            },
             title,
             content,
             attachments,
@@ -286,6 +306,25 @@ impl Edit {
 }
 
 pub const PRIORITIES: [&str; 3] = ["P0", "P1", "P2"];
+
+/// What a priority means, as the form and the card show it: (value, name, description).
+const PRIORITY_NAMES: [(&str, &str, &str); 3] = [
+    (
+        "P0",
+        "P0 · Critical",
+        "Crash, lost work or a broken release: fix first",
+    ),
+    ("P1", "P1 · High", "Breaks something people use: fix soon"),
+    ("P2", "P2 · Normal", "Fix or build when there is time"),
+];
+
+/// A priority as people read it: "P1 · High"; an unknown value as it is.
+pub fn priority_name(value: &str) -> &str {
+    PRIORITY_NAMES
+        .iter()
+        .find(|(v, _, _)| *v == value)
+        .map_or(value, |(_, name, _)| name)
+}
 
 // ---------------------------------------------------------------------------------------------
 // Words to review
@@ -427,7 +466,10 @@ pub fn card(draft: &Draft, key: &str, words: Option<&[String]>) -> Value {
     if draft.priority.is_some() || draft.phase.is_some() {
         lines.push(format!(
             "**Board:** {} · {}",
-            draft.priority.as_deref().unwrap_or("no priority"),
+            draft
+                .priority
+                .as_deref()
+                .map_or("no priority", priority_name),
             draft.phase.as_deref().unwrap_or("no phase")
         ));
     }
@@ -508,21 +550,31 @@ pub fn edit_modal(draft: &Draft, key: &str) -> Value {
         field("Text", "body", 2, &draft.body, BODY_LIMIT),
     ];
     if draft.triage {
-        let options = |values: Vec<&str>, current: Option<&str>| -> Vec<Value> {
-            values
-                .into_iter()
-                .take(25)
-                .map(|v| json!({ "label": v, "value": v, "default": current == Some(v) }))
-                .collect()
-        };
-        components.push(json!({ "type": 18, "label": "Priority (optional)", "component": {
-            "type": 3, "custom_id": "priority", "min_values": 0, "max_values": 1, "required": false,
-            "options": options(PRIORITIES.to_vec(), draft.priority.as_deref()),
+        let priorities: Vec<Value> = PRIORITY_NAMES
+            .iter()
+            .map(|(value, name, about)| {
+                json!({ "label": name, "value": value, "description": about,
+                    "default": draft.priority.as_deref() == Some(*value) })
+            })
+            .collect();
+        components.push(json!({ "type": 18, "label": "Priority",
+            "description": "How urgent it is on the board. Leave it empty to decide later.",
+            "component": {
+                "type": 3, "custom_id": "priority", "min_values": 0, "max_values": 1, "required": false,
+                "placeholder": "No priority yet", "options": priorities,
         }}));
         if !draft.phases.is_empty() {
-            components.push(json!({ "type": 18, "label": "Phase (optional)", "component": {
-                "type": 3, "custom_id": "phase", "min_values": 0, "max_values": 1, "required": false,
-                "options": options(draft.phases.iter().map(String::as_str).collect(), draft.phase.as_deref()),
+            let phases: Vec<Value> = draft
+                .phases
+                .iter()
+                .take(25)
+                .map(|v| json!({ "label": v, "value": v, "default": draft.phase.as_deref() == Some(v.as_str()) }))
+                .collect();
+            components.push(json!({ "type": 18, "label": "Phase",
+                "description": "The roadmap milestone it belongs to. Leave it empty to decide later.",
+                "component": {
+                    "type": 3, "custom_id": "phase", "min_values": 0, "max_values": 1, "required": false,
+                    "placeholder": "No phase yet", "options": phases,
             }}));
         }
     }
@@ -579,6 +631,35 @@ pub fn thanks(kind: Kind, number: u64, url: &str) -> String {
             "Thanks for the idea! It's on the backlog on GitHub as {}. We'll post here when it lands.",
             crate::reply::issue_link(number, url)
         ),
+    }
+}
+
+/// ✅, as Discord takes it in a URL: the reaction when `TRACKED_EMOJI` is not set.
+pub const CHECK_MARK: &str = "%E2%9C%85";
+
+/// The reaction that marks a tracked report, as Discord takes it in a URL. `TRACKED_EMOJI` is a
+/// server emoji as Discord writes it (`<:github:123>`, what `\:github:` shows in a message) or
+/// as `github:123`; anything else falls back to ✅.
+pub fn reaction(setting: Option<&str>) -> String {
+    let Some(setting) = setting else {
+        return CHECK_MARK.to_owned();
+    };
+    let inner = setting
+        .trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .trim_start_matches("a:")
+        .trim_start_matches(':');
+    match inner.split_once(':') {
+        Some((name, id))
+            if !name.is_empty()
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                && !id.is_empty()
+                && id.chars().all(|c| c.is_ascii_digit()) =>
+        {
+            format!("{name}:{id}")
+        }
+        _ => CHECK_MARK.to_owned(),
     }
 }
 
@@ -710,12 +791,25 @@ mod tests {
     }
 
     #[test]
+    fn the_reaction_is_the_server_emoji_or_a_check_mark() {
+        assert_eq!(reaction(Some("<:github:123>")), "github:123");
+        assert_eq!(reaction(Some("<a:github:123>")), "github:123");
+        assert_eq!(reaction(Some(" github:123 ")), "github:123");
+        assert_eq!(reaction(None), CHECK_MARK);
+        assert_eq!(reaction(Some(":github:")), CHECK_MARK);
+        assert_eq!(reaction(Some("github:12x")), CHECK_MARK);
+        assert_eq!(reaction(Some("git/hub:123")), CHECK_MARK);
+    }
+
+    #[test]
     fn only_images_are_counted() {
         let mut text = shot("notes.txt");
         text.content_type = Some("text/plain".to_owned());
         let draft = Draft::from_message(
             "7",
             Kind::Feature,
+            "c1",
+            "m1",
             "Idea\nMore",
             &[text, shot("c.png")],
             false,
@@ -789,6 +883,24 @@ mod tests {
                 .len(),
             4
         );
+    }
+
+    #[test]
+    fn priorities_are_named_in_the_form_and_on_the_card() {
+        let mut draft = draft();
+        draft.triage = true;
+        draft.priority = Some("P1".to_owned());
+        let form = edit_modal(&draft, "a1");
+        let priority = &form["data"]["components"][2];
+        assert_eq!(priority["label"], "Priority");
+        let options = priority["component"]["options"].as_array().unwrap();
+        assert_eq!(options[1]["label"], "P1 · High");
+        assert_eq!(options[1]["value"], "P1");
+        assert_eq!(options[1]["default"], true);
+        assert_eq!(options[0]["default"], false);
+        let card_body = card(&draft, "ab12", None);
+        assert!(card_body["content"].as_str().unwrap().contains("P1 · High"));
+        assert_eq!(priority_name("P9"), "P9");
     }
 
     #[test]

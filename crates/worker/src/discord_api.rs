@@ -84,6 +84,21 @@ impl Discord {
         .await
     }
 
+    /// A reply to a message, with no mentions parsed; still sent when the message is gone.
+    pub async fn reply(&self, channel: &str, message: &str, content: &str) -> Result<Value> {
+        let body = serde_json::json!({
+            "content": content,
+            "allowed_mentions": { "parse": [] },
+            "message_reference": { "message_id": message, "fail_if_not_exists": false },
+        });
+        self.call(
+            Method::Post,
+            &format!("/channels/{channel}/messages"),
+            Some(&body),
+        )
+        .await
+    }
+
     /// `emoji` as Discord takes it in the URL, e.g. `%E2%9C%85` for ✅.
     pub async fn react(&self, channel: &str, message: &str, emoji: &str) -> Result<()> {
         self.call(

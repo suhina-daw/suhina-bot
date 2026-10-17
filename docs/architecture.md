@@ -74,9 +74,12 @@ Anyone reports with `/bug`; nothing reaches GitHub until a moderator has reviewe
 /track in that post ──▶ Job::TrackThread ──▶ worker::track: read the post (title, starter
         message, tags), Draft::from_post, similar issues, board phases ──▶ store draft:<key>
         ──▶ review card (core::review::card), only the moderator sees it
+Add as bug / Add to backlog on a message ──▶ Job::TrackMessage ──▶ Draft::from_message (its
+        channel and id); on a post's starter message the post's draft, as /track makes it
 card buttons ──▶ Job::Card / CardEdit / OpenEdit (the card's owner only): Replace, Edit, Check
-Create issue ──▶ claim creating:<post> ──▶ issue (labels from tags, type) ──▶ tracked:<thread>
-        ──▶ board (Backlog, Priority, Phase) ──▶ in the thread: thanks, Tracked tag, ✅
+Create issue ──▶ claim creating:<message> ──▶ issue (labels from tags, type) ──▶ tracked:<message>
+        ──▶ board (Backlog, Priority, Phase) ──▶ a post: thanks in the thread and its Tracked tag;
+        a message: a reply ──▶ the TRACKED_EMOJI reaction (✅ when unset) on the report
 ```
 
 Why the review: issues are project material that people and agents read, so Suhina's clean-room
@@ -87,10 +90,11 @@ to replace them with "another DAW", and keeps **Create issue** disabled until th
 confirms. Screenshots never leave Discord, since they may show another product; the issue counts
 them. The issue never names, mentions or links the reporter or the message.
 
-**An issue is created once.** Create claims `creating:<post>` before calling GitHub, so a second
-press, a second moderator's card for the same post or a replay finds the claim and creates
-nothing; the post is recorded as tracked as soon as the issue exists, before the board and the
-thread are touched.
+**An issue is created once.** Create claims `creating:<message>` before calling GitHub (a post's
+starter message has the thread's id, so `/track` and a message command on it share the key), so a
+second press, a second moderator's card for the same report or a replay finds the claim and
+creates nothing; the report is recorded as tracked as soon as the issue exists, before the board
+and Discord are touched, and a new card for it says which issue it already is.
 
 Who may do what is `core::access`: staff roles (`STAFF_ROLE_IDS`) track reports, triage roles
 (`TRIAGE_ROLE_IDS`) also set Priority and Phase, an administrator of Suhina's server is both. A
