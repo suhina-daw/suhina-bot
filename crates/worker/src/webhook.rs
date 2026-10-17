@@ -3,7 +3,7 @@
 
 //! The App's webhook. Every delivery is checked against `GITHUB_WEBHOOK_SECRET`; a delivery that
 //! fails is refused with 401. The bot subscribes to `issue_comment` only, to relay the claim
-//! bot's answers back to Discord (#9); until then deliveries are accepted
+//! bot's answers back to Discord (#7); until then deliveries are accepted
 //! and dropped.
 
 use suhina_bot_core::webhook::verify_github;

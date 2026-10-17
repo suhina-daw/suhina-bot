@@ -57,7 +57,7 @@ line that is kept in history: paste it at the prompt, or pipe it from the passwo
 | `REVIEW_WORDS` | a JSON array of product names the review card marks, e.g. `'["…", "…"]'`; include old and new names of a renamed product. Unset: the card says the check is off | the maintainer's list |
 | `GITHUB_APP_ID` | the GitHub App | the App's General page |
 | `GITHUB_APP_PRIVATE_KEY` | the App's private key, the whole `.pem` | the App's Credentials › Key pairs |
-| `GITHUB_WEBHOOK_SECRET` | the App's webhook secret; not set until the webhook is turned on (#9) | chosen when the webhook is set up |
+| `GITHUB_WEBHOOK_SECRET` | the App's webhook secret; not set until the webhook is turned on (#7) | chosen when the webhook is set up |
 
 `[vars]` in `wrangler.toml` holds only names: `GITHUB_REPOSITORY`, `BOARD_OWNER`, `BOARD_NUMBER`.
 A server administrator of Suhina's server counts as staff and triage without a role; an
