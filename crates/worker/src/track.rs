@@ -9,7 +9,7 @@ use serde_json::Value;
 use suhina_bot_core::forum;
 use suhina_bot_core::interaction::Interaction;
 use suhina_bot_core::reply;
-use suhina_bot_core::review::{self, Action, Draft, Edit, Post, Source};
+use suhina_bot_core::review::{self, Action, Draft, Edit, Kind, Post, Source};
 use worker::{Env, Result, console_error};
 
 use crate::discord_api::Discord;
@@ -20,8 +20,6 @@ use crate::store::Store;
 const NOT_IN_A_POST: &str = "Use `/track` inside a post in #bug-reports or #feature-requests. Elsewhere, right-click a message › Apps › **Add as bug** or **Add to backlog**.";
 const EXPIRED: &str = "This draft has expired (15 minutes). Run the command again.";
 const NOT_YOURS: &str = "This card belongs to the moderator who opened it.";
-/// ✅ in a URL.
-const CHECK_MARK: &str = "%E2%9C%85";
 const TRACKED_TAG: &str = "Tracked";
 
 fn draft_key(key: &str) -> String {
@@ -36,23 +34,57 @@ pub async fn thread(
     triage: bool,
 ) -> Result<Value> {
     let settings = Settings::read(env);
+    let owner = interaction.user_id().unwrap_or_default();
+    match post_draft(env, &settings, owner, channel_id, triage, None).await? {
+        Some(draft) => show_new(env, &settings, draft).await,
+        None => Ok(review::closed_card(NOT_IN_A_POST)),
+    }
+}
+
+/// A message command: the card for that one message. On a post's starter message in
+/// bug-reports or feature-requests it is the post's card, as `/track` makes it, of the kind the
+/// command names.
+pub async fn message(env: &Env, draft: Draft) -> Result<Value> {
+    let settings = Settings::read(env);
+    if let Source::Message {
+        channel_id,
+        message_id,
+    } = &draft.source
+        && channel_id == message_id
+        && let Some(post) = post_draft(
+            env,
+            &settings,
+            &draft.owner,
+            channel_id,
+            draft.triage,
+            Some(draft.kind),
+        )
+        .await?
+    {
+        return show_new(env, &settings, post).await;
+    }
+    show_new(env, &settings, draft).await
+}
+
+/// The draft for a post in bug-reports or feature-requests, or `None` when the thread is not
+/// one. `kind` overrides what the forum makes it.
+async fn post_draft(
+    env: &Env,
+    settings: &Settings,
+    owner: &str,
+    channel_id: &str,
+    triage: bool,
+    kind: Option<Kind>,
+) -> Result<Option<Draft>> {
     let discord = Discord::new(env);
     let thread = discord.channel(channel_id).await?;
     let parent = thread
         .get("parent_id")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let Some(kind) = settings.forum_kind(parent) else {
-        return Ok(review::closed_card(NOT_IN_A_POST));
+    let Some(forum_kind) = settings.forum_kind(parent) else {
+        return Ok(None);
     };
-    let store = Store::new(env)?;
-    if let Some(number) = store.get::<u64>(&format!("tracked:{channel_id}")).await? {
-        let repository = settings::require(env, "GITHUB_REPOSITORY")?;
-        return Ok(review::closed_card(&format!(
-            "Already tracked as {}.",
-            reply::issue_link_in(&repository, number)
-        )));
-    }
     let forum_channel = discord.channel(parent).await?;
     // A forum post's starter message has the thread's id.
     let starter = discord.message(channel_id, channel_id).await?;
@@ -74,24 +106,25 @@ pub async fn thread(
         attachments,
         tags: &tags,
     };
-    let draft = Draft::from_post(
-        interaction.user_id().unwrap_or_default(),
-        kind,
+    Ok(Some(Draft::from_post(
+        owner,
+        kind.unwrap_or(forum_kind),
         post,
         triage,
-    );
-    show_new(env, &settings, draft).await
-}
-
-/// A message command: the card for that one message.
-pub async fn message(env: &Env, draft: Draft) -> Result<Value> {
-    let settings = Settings::read(env);
-    show_new(env, &settings, draft).await
+    )))
 }
 
 /// Fills in what needs GitHub (similar issues, the board's phases), keeps the draft and shows
 /// its card.
 async fn show_new(env: &Env, settings: &Settings, mut draft: Draft) -> Result<Value> {
+    let tracked = format!("tracked:{}", draft.source.message_id());
+    if let Some(number) = Store::new(env)?.get::<u64>(&tracked).await? {
+        let repository = settings::require(env, "GITHUB_REPOSITORY")?;
+        return Ok(review::closed_card(&format!(
+            "Already tracked as {}.",
+            reply::issue_link_in(&repository, number)
+        )));
+    }
     let github = GitHub::new(env)?;
     draft.similar = github.similar(&draft.title).await.unwrap_or_else(|error| {
         console_error!("similar issues: {error}");
@@ -182,11 +215,8 @@ async fn create(
 ) -> Result<Value> {
     // Reserve first: a second press, a second moderator's card for the same post, or a retry
     // finds the reservation and creates nothing. The reservation is per post for a post, per
-    // draft otherwise, and lasts as long as a draft.
-    let reservation = match &draft.source {
-        Source::Thread { thread_id } => format!("creating:{thread_id}"),
-        Source::Message => format!("creating:{key}"),
-    };
+    // message (a post's starter message has the thread's id), and lasts as long as a draft.
+    let reservation = format!("creating:{}", draft.source.message_id());
     if !store
         .claim(&reservation, &true, review::DRAFT_SECONDS)
         .await?
@@ -208,12 +238,14 @@ async fn create(
             review::issue_type(draft.kind),
         )
         .await?;
-    // Recorded before anything else can fail, so the post never gets a second issue.
-    if let Source::Thread { thread_id } = &draft.source {
-        store
-            .put(&format!("tracked:{thread_id}"), &number, None)
-            .await?;
-    }
+    // Recorded before anything else can fail, so the report never gets a second issue.
+    store
+        .put(
+            &format!("tracked:{}", draft.source.message_id()),
+            &number,
+            None,
+        )
+        .await?;
     store.delete(&draft_key(key)).await?;
 
     match github
@@ -240,23 +272,36 @@ async fn create(
         }
     }
 
-    if let Source::Thread { thread_id } = &draft.source {
-        let discord = Discord::new(env);
-        if let Err(error) = discord
-            .send_message(thread_id, &review::thanks(draft.kind, number, &url))
-            .await
-        {
-            console_error!("thanks: {error}");
-            problems.push("the thank-you message could not be posted".to_owned());
+    // Thanks and a reaction on the report: a post also gets its Tracked tag, a message is
+    // answered with a reply.
+    let discord = Discord::new(env);
+    let thanks = review::thanks(draft.kind, number, &url);
+    let (channel, message) = match &draft.source {
+        Source::Thread { thread_id } => {
+            if let Err(error) = discord.send_message(thread_id, &thanks).await {
+                console_error!("thanks: {error}");
+                problems.push("the thank-you message could not be posted".to_owned());
+            }
+            if let Err(error) = mark_tracked(&discord, thread_id).await {
+                console_error!("tag: {error}");
+                problems.push("the Tracked tag could not be set".to_owned());
+            }
+            (thread_id, thread_id)
         }
-        if let Err(error) = mark_tracked(&discord, thread_id).await {
-            console_error!("tag: {error}");
-            problems.push("the Tracked tag could not be set".to_owned());
+        Source::Message {
+            channel_id,
+            message_id,
+        } => {
+            if let Err(error) = discord.reply(channel_id, message_id, &thanks).await {
+                console_error!("thanks: {error}");
+                problems.push("the thank-you reply could not be posted".to_owned());
+            }
+            (channel_id, message_id)
         }
-        if let Err(error) = discord.react(thread_id, thread_id, CHECK_MARK).await {
-            console_error!("reaction: {error}");
-            problems.push("the ✅ reaction could not be added".to_owned());
-        }
+    };
+    if let Err(error) = discord.react(channel, message, &settings.reaction).await {
+        console_error!("reaction: {error}");
+        problems.push("the reaction could not be added".to_owned());
     }
 
     let mut text = format!("Created {}.", reply::issue_link(number, &url));

@@ -187,6 +187,11 @@ impl Interaction {
             .collect()
     }
 
+    /// The id of the message a message command was used on.
+    pub fn target_message_id(&self) -> Option<&str> {
+        self.data.as_ref()?.target_id.as_deref()
+    }
+
     /// The message a message command was used on.
     fn target_message(&self) -> Option<&Value> {
         let data = self.data.as_ref()?;
